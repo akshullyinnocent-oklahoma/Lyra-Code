@@ -15,10 +15,15 @@ android {
         applicationId = "com.yukisoffd.lyracode"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "1.10.3"
+        versionCode = 26
+        versionName = "2.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField(
+            "String",
+            "LYRA_UPDATE_MANIFEST_URL",
+            "\"${providers.gradleProperty("lyra.updateManifestUrl").orNull.orEmpty()}\"",
+        )
     }
 
     buildTypes {
@@ -45,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

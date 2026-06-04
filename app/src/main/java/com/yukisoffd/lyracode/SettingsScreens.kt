@@ -104,6 +104,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -179,6 +180,9 @@ import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.RoleplayScenario
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
+import com.yukisoffd.lyracode.data.AppUpdateInfo
+import com.yukisoffd.lyracode.data.UpdateDownloadProgress
+import com.yukisoffd.lyracode.data.UpdateManager
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
@@ -2436,6 +2440,9 @@ internal fun OpenSourceLicensesScreen() {
 @Composable
 internal fun AboutSoftwareScreen() {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    val updateManager = remember(context) { UpdateManager(context) }
     val packageInfo = remember(context.packageName) {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -2453,45 +2460,212 @@ internal fun AboutSoftwareScreen() {
             it.versionCode.toString()
         }
     } ?: "未知"
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        KimiCardBox {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Lyra Code", style = MaterialTheme.typography.titleMedium)
-                Text("版本 $versionName ($versionCode)", color = KimiMuted)
-                Text("包名 ${context.packageName}", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "面向 Android 的本地 AI Agent 工具，支持多平台模型、流式对话、Termux、工作区文件操作、联网搜索、MCP、Skills、TODO 进度和文件变更审查。",
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
+    var notice by remember { mutableStateOf("") }
+    var checking by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var downloadProgress by remember { mutableStateOf<UpdateDownloadProgress?>(null) }
+    var downloading by remember { mutableStateOf(false) }
+
+    fun checkUpdate() {
+        if (checking) return
+        checking = true
+        notice = "正在检查更新..."
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { updateManager.checkForUpdate() }
+            checking = false
+            result.fold(
+                onSuccess = { info ->
+                    if (info == null) {
+                        notice = "当前已是最新版本"
+                    } else {
+                        notice = ""
+                        updateInfo = info
+                    }
+                },
+                onFailure = { notice = it.message.orEmpty().ifBlank { "检查更新失败" } },
+            )
         }
-        KimiSectionLabel("隐私与安全")
-        KimiCardBox {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("隐私与安全", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "API Key 保存在本机配置中；对话、工具输出、缓存和审查日志默认留在本机。使用第三方模型接口、HTTP 明文 URL、联网搜索、MCP 或 Termux 命令时，数据会按用户配置发送到对应服务或本机执行环境。",
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+    }
+
+    updateInfo?.let { info ->
+        UpdateDialog(
+            info = info,
+            progress = downloadProgress,
+            downloading = downloading,
+            onDismiss = {
+                if (!downloading) {
+                    updateInfo = null
+                    downloadProgress = null
+                }
+            },
+            onOpenWeb = {
+                val target = info.webUrl.ifBlank { info.apkUrl }
+                if (target.isNotBlank()) runCatching { uriHandler.openUri(target) }
+            },
+            onDownload = {
+                if (downloading) return@UpdateDialog
+                downloading = true
+                downloadProgress = UpdateDownloadProgress(status = "准备下载")
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        updateManager.downloadApk(info) { progress -> downloadProgress = progress }
+                    }
+                    downloading = false
+                    result.fold(
+                        onSuccess = { apk ->
+                            notice = "下载完成，准备安装"
+                            runCatching { context.startActivity(updateManager.installOrRequestPermission(apk)) }
+                                .onFailure { notice = it.message.orEmpty().ifBlank { "无法打开安装器" } }
+                        },
+                        onFailure = {
+                            val message = it.message.orEmpty().ifBlank { "下载失败" }
+                            downloadProgress = UpdateDownloadProgress(status = message)
+                            notice = message
+                        },
+                    )
+                }
+            },
+        )
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            KimiCardBox {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Lyra Code", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "面向 Android 的本地 AI Agent 工具，支持多平台模型、流式对话、Termux、工作区文件操作、联网搜索、MCP、Skills、TODO 进度和文件变更审查。",
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
-        }
-        KimiSectionLabel("构建信息")
-        KimiCardBox {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("构建信息", style = MaterialTheme.typography.titleSmall)
-                KimiMenuRow(Icons.Default.Android, "Android SDK", Build.VERSION.SDK_INT.toString())
+            KimiSectionLabel("版本与更新")
+            KimiCardBox {
+                KimiMenuRow(
+                    Icons.Default.SystemUpdate,
+                    "版本 $versionName ($versionCode)",
+                    if (checking) "正在检查更新..." else "点击检测新版本",
+                    onClick = ::checkUpdate,
+                )
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Apps, "应用 ID", context.packageName)
             }
+            KimiSectionLabel("仓库")
+            KimiCardBox {
+                KimiMenuRow(Icons.Default.Code, "GitHub", "Soffd/Lyra-Code") {
+                    uriHandler.openUri("https://github.com/Soffd/Lyra-Code")
+                }
+                KimiDivider()
+                KimiMenuRow(Icons.Default.Link, "Gitee", "yukisoffd/lyra-code") {
+                    uriHandler.openUri("https://gitee.com/yukisoffd/lyra-code")
+                }
+            }
+            KimiSectionLabel("隐私与安全")
+            KimiCardBox {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("隐私与安全", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "API Key 保存在本机配置中；对话、工具输出、缓存和审查日志默认留在本机。使用第三方模型接口、HTTP 明文 URL、联网搜索、MCP 或 Termux 命令时，数据会按用户配置发送到对应服务或本机执行环境。",
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        "应用内更新会下载 APK 二进制文件并校验 SHA-256。安装前 Android 会要求用户允许 Lyra Code 安装未知来源应用。",
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            KimiSectionLabel("构建信息")
+            KimiCardBox {
+                KimiMenuRow(Icons.Default.Android, "Android SDK", Build.VERSION.SDK_INT.toString())
+                KimiDivider()
+                KimiMenuRow(Icons.Default.CloudDownload, "更新清单", updateManager.manifestUrl().ifBlank { "未配置" })
+            }
         }
+        TransientNotice(
+            message = notice,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(24.dp),
+            onDismiss = { notice = "" },
+        )
     }
+}
+
+@Composable
+internal fun UpdateDialog(
+    info: AppUpdateInfo,
+    progress: UpdateDownloadProgress?,
+    downloading: Boolean,
+    onDismiss: () -> Unit,
+    onOpenWeb: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.SystemUpdate, contentDescription = null) },
+        title = { Text("发现新版本 ${info.versionName.ifBlank { info.versionCode.toString() }}") },
+        text = {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (info.mandatory) {
+                    Text("这是重要更新，建议尽快安装。", color = MaterialTheme.colorScheme.error)
+                }
+                RichMarkdownContent(
+                    markdown = info.releaseNotes,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (info.apkSha256.isNotBlank()) {
+                    Text(
+                        "SHA-256：${info.apkSha256}",
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    )
+                }
+                progress?.let {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LinearProgressIndicator(
+                            progress = { it.percent },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        val totalText = if (it.totalBytes > 0) " / ${formatBytes(it.totalBytes)}" else ""
+                        Text(
+                            "${it.status} ${formatBytes(it.downloadedBytes)}$totalText",
+                            color = KimiMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDownload, enabled = !downloading && info.apkUrl.isNotBlank()) {
+                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (downloading) "下载中" else "应用内下载")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (info.webUrl.isNotBlank() || info.apkUrl.isNotBlank()) {
+                    TextButton(onClick = onOpenWeb) { Text("网页下载") }
+                }
+                TextButton(onClick = onDismiss, enabled = !downloading) { Text("稍后") }
+            }
+        },
+    )
 }
 
 @Composable
