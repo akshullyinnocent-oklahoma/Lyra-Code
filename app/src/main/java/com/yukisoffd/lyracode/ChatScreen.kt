@@ -1,0 +1,1873 @@
+package com.yukisoffd.lyracode
+
+import android.Manifest
+import android.app.Activity
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.provider.MediaStore
+import android.util.Base64
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.MediaController
+import android.widget.VideoView
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.DrawerValue
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import com.yukisoffd.lyracode.ai.ChatRecord
+import com.yukisoffd.lyracode.ai.AiResponseCache
+import com.yukisoffd.lyracode.ai.OpenAiAgent
+import com.yukisoffd.lyracode.ai.TodoItem
+import com.yukisoffd.lyracode.ai.WebViewWebAgent
+import com.yukisoffd.lyracode.data.ApiProfile
+import com.yukisoffd.lyracode.data.AppSettings
+import com.yukisoffd.lyracode.data.AuditEntry
+import com.yukisoffd.lyracode.data.AuditLogStore
+import com.yukisoffd.lyracode.data.BackupManager
+import com.yukisoffd.lyracode.data.BackupOptions
+import com.yukisoffd.lyracode.data.Conversation
+import com.yukisoffd.lyracode.data.ConversationStore
+import com.yukisoffd.lyracode.data.McpServerConfig
+import com.yukisoffd.lyracode.data.McpToolDefinition
+import com.yukisoffd.lyracode.data.RoleplaySticker
+import com.yukisoffd.lyracode.data.SkillPack
+import com.yukisoffd.lyracode.data.SshServerConfig
+import com.yukisoffd.lyracode.data.WebDavServerConfig
+import com.yukisoffd.lyracode.mcp.McpClientManager
+import com.yukisoffd.lyracode.ssh.SshExecutor
+import com.yukisoffd.lyracode.termux.TermuxExecutor
+import com.yukisoffd.lyracode.webdav.TransferProgress
+import com.yukisoffd.lyracode.webdav.WebDavClient
+import com.yukisoffd.lyracode.workspace.GlobalFileManager
+import com.yukisoffd.lyracode.workspace.NativeFileManager
+import com.yukisoffd.lyracode.workspace.UploadedFile
+import com.yukisoffd.lyracode.workspace.UploadedFileManager
+import com.yukisoffd.lyracode.workspace.WorkspaceManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URL
+import java.util.Date
+import java.util.Locale
+import kotlin.math.min
+import kotlin.math.max
+import kotlin.math.abs
+import android.graphics.Canvas as AndroidCanvas
+
+@Composable
+internal fun ChatScreen(controller: ChatController, settings: AppSettings, termuxExecutor: TermuxExecutor) {
+    val context = LocalContext.current
+    var input by rememberSaveable { mutableStateOf("") }
+    var fetchStatus by remember { mutableStateOf("") }
+    var attachmentMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var attachmentMenuPage by rememberSaveable { mutableStateOf("root") }
+    var attachmentMenuSearch by rememberSaveable { mutableStateOf("") }
+    var cropUploadUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    var selectionResetKey by remember { mutableIntStateOf(0) }
+    val fileUploadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) controller.attachUploadedFile(uri)
+    }
+    val imageUploadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) cropUploadUri = uri
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? ->
+        if (bitmap != null) cropUploadUri = saveTemporaryUploadImage(context, bitmap)
+    }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val messageSnapshot = controller.messages.value
+    val renderItems = remember(messageSnapshot) { chatRenderItems(messageSnapshot) }
+    val pendingUploads = controller.pendingUploads
+    val canSend = (input.isNotBlank() || pendingUploads.isNotEmpty()) && !controller.isActiveConversationRunning()
+    val isRunning = controller.isActiveConversationRunning()
+    var autoFollowOutput by remember(controller.activeConversationId.value) { mutableStateOf(true) }
+    val isInterrupted = controller.activeConversation()?.status == ConversationStore.STATUS_INTERRUPTED
+    val termuxPermissionGranted = termuxExecutor.hasRunCommandPermission()
+    controller.pendingToolApproval.value?.let { pending ->
+        ToolApprovalDialog(
+            pending = pending,
+            onApprove = { rememberConversation ->
+                controller.answerToolApproval(approved = true, rememberForConversation = rememberConversation, feedback = "")
+            },
+            onReject = { feedback ->
+                controller.answerToolApproval(approved = false, rememberForConversation = false, feedback = feedback)
+            },
+        )
+    }
+    cropUploadUri?.let { uri ->
+        ImageCropUploadDialog(
+            uri = uri,
+            onDismiss = { cropUploadUri = null },
+            onUseOriginal = {
+                controller.attachUploadedFile(uri)
+                cropUploadUri = null
+            },
+            onCropped = { cropped ->
+                controller.attachUploadedFile(cropped)
+                cropUploadUri = null
+            },
+        )
+    }
+    if (attachmentMenuOpen) {
+        AttachmentActionBottomSheet(
+            controller = controller,
+            page = attachmentMenuPage,
+            search = attachmentMenuSearch,
+            onPageChange = {
+                attachmentMenuPage = it
+                attachmentMenuSearch = ""
+            },
+            onSearchChange = { attachmentMenuSearch = it },
+            onDismiss = {
+                attachmentMenuOpen = false
+                attachmentMenuPage = "root"
+                attachmentMenuSearch = ""
+            },
+            onPickFile = {
+                attachmentMenuOpen = false
+                fileUploadLauncher.launch("*/*")
+            },
+            onPickImage = {
+                attachmentMenuOpen = false
+                imageUploadLauncher.launch("image/*")
+            },
+            onTakePhoto = {
+                attachmentMenuOpen = false
+                cameraLauncher.launch(null)
+            },
+            onFetchModels = {
+                attachmentMenuOpen = false
+                controller.fetchModels {
+                    fetchStatus = it.fold({ "已获取 ${it.size} 个模型" }, { error -> error.message.orEmpty() })
+                }
+            },
+        )
+    }
+    LaunchedEffect(fetchStatus) {
+        val currentStatus = fetchStatus
+        if (currentStatus.isNotBlank()) {
+            kotlinx.coroutines.delay(2400L)
+            if (fetchStatus == currentStatus) {
+                fetchStatus = ""
+            }
+        }
+    }
+
+    if (controller.isRoleplayMode()) {
+        RoleplayChatScreen(
+            controller = controller,
+            settings = settings,
+            input = input,
+            onInputChange = { input = it },
+            pendingUploads = pendingUploads,
+            canSend = canSend,
+            isRunning = isRunning,
+            listState = listState,
+            onOpenMenu = {
+                attachmentMenuPage = "root"
+                attachmentMenuOpen = true
+            },
+            onSend = {
+                val text = input
+                input = ""
+                attachmentMenuOpen = false
+                controller.send(text)
+            },
+            onStop = { controller.stopActive() },
+        )
+        return
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        TodoProgressPanel(settings, controller.activeConversationId.value, controller.todoItems)
+        ConversationChangesPanel(settings, controller.activeConversationId.value, messageSnapshot)
+        val isNearOutputEnd by remember {
+            derivedStateOf {
+                val total = listState.layoutInfo.totalItemsCount
+                if (total == 0) {
+                    true
+                } else {
+                    val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                    val bottomDistance = if (last != null && last.index == total - 1) {
+                        listState.layoutInfo.viewportEndOffset - (last.offset + last.size)
+                    } else {
+                        Int.MIN_VALUE
+                    }
+                    !listState.canScrollForward || bottomDistance >= -220
+                }
+            }
+        }
+        LaunchedEffect(isRunning, isNearOutputEnd, listState.isScrollInProgress) {
+            when {
+                isNearOutputEnd -> autoFollowOutput = true
+                isRunning && listState.isScrollInProgress -> autoFollowOutput = false
+            }
+        }
+        LaunchedEffect(messageSnapshot.lastOrNull()?.id, messageSnapshot.lastOrNull()?.content?.length, messageSnapshot.lastOrNull()?.thinking?.length) {
+            if (messageSnapshot.isNotEmpty() && (autoFollowOutput || isNearOutputEnd)) {
+                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            }
+        }
+        val blankTapInteraction = remember { MutableInteractionSource() }
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = blankTapInteraction,
+                    indication = null,
+                    onClick = { selectionResetKey++ },
+                ),
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                if (messageSnapshot.isEmpty()) {
+                    item(key = "empty-greeting") {
+                        EmptyConversationGreeting(
+                            showTermuxHint = !termuxPermissionGranted && !settings.hideTermuxPermissionHint,
+                            onGrantTermux = { requestTermuxRunCommandPermission(context) },
+                            onHideTermuxHint = { settings.hideTermuxPermissionHint = true },
+                        )
+                    }
+                }
+                items(renderItems, key = { it.key }) { item ->
+                    if (item.process.isNotEmpty()) {
+                        AgentProcessSummary(item.process, selectionResetKey)
+                    } else if (item.message != null) {
+                        MessageCard(item.message, selectionResetKey)
+                    }
+                }
+                if (isInterrupted && messageSnapshot.isNotEmpty()) {
+                    item(key = "continue-interrupted") {
+                        ContinueInterruptedRow(onContinue = { controller.continueActive() })
+                    }
+                }
+                item(key = "bottom-anchor") {
+                    Spacer(Modifier.height(1.dp))
+                }
+            }
+            if (messageSnapshot.isNotEmpty() && !isNearOutputEnd && !listState.isScrollInProgress) {
+                IconButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(listState.layoutInfo.totalItemsCount - 1) } },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .size(48.dp)
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), CircleShape),
+                ) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "回到底部")
+                }
+            }
+        }
+        val statusLine = listOf(controller.status.value, controller.uploadingStatus.value, fetchStatus)
+            .filter { it.isNotBlank() && it != "完成" }
+            .joinToString(" ")
+        if (statusLine.isNotBlank()) {
+            Text(statusLine, color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+        }
+        Card(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (pendingUploads.isNotEmpty()) {
+                    PendingUploadStrip(pendingUploads, onRemove = controller::removePendingUpload)
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box {
+                        TextButton(
+                            onClick = {
+                                attachmentMenuPage = "root"
+                                attachmentMenuOpen = !attachmentMenuOpen
+                            },
+                            shape = CircleShape,
+                            contentPadding = PaddingValues(0.dp),
+                            modifier = Modifier.size(42.dp),
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "添加附件")
+                        }
+                    }
+                    CapsuleTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        minLines = 1,
+                        maxLines = 4,
+                        placeholder = "输入消息",
+                        enabled = !isRunning,
+                    )
+                    AnimatedVisibility(isRunning) {
+                        Button(
+                            modifier = Modifier.size(42.dp),
+                            shape = CircleShape,
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
+                            onClick = { controller.stopActive() },
+                        ) {
+                            Icon(Icons.Default.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.background)
+                        }
+                    }
+                    AnimatedVisibility(canSend && !isRunning) {
+                        Button(
+                            modifier = Modifier.size(42.dp),
+                            enabled = canSend,
+                            shape = CircleShape,
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
+                            onClick = {
+                                val text = input
+                                input = ""
+                                attachmentMenuOpen = false
+                                controller.send(text)
+                            },
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = "发送", tint = MaterialTheme.colorScheme.background)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun RoleplayChatScreen(
+    controller: ChatController,
+    settings: AppSettings,
+    input: String,
+    onInputChange: (String) -> Unit,
+    pendingUploads: List<UploadedFile>,
+    canSend: Boolean,
+    isRunning: Boolean,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    onOpenMenu: () -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val roleplayId = controller.currentRoleplayId()
+    val scenario = remember(settings.settingsRevisionSafe(), roleplayId) {
+        settings.roleplayScenario(roleplayId)
+    }
+    val stickers = remember(settings.settingsRevisionSafe(), roleplayId) {
+        settings.roleplayStickers(roleplayId)
+    }
+    val background = remember(scenario?.backgroundPath) {
+        scenario?.backgroundPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
+    }
+    val messageSnapshot = controller.messages.value
+    val visibleMessages = remember(messageSnapshot, isRunning) {
+        val roleMessages = messageSnapshot.filter { it.role == "user" || it.role == "assistant" }
+        val streamingAssistantId = if (isRunning) roleMessages.lastOrNull { it.role == "assistant" }?.id else null
+        roleMessages.filterNot { it.id == streamingAssistantId && it.role == "assistant" }
+    }
+    val scope = rememberCoroutineScope()
+    val affection = settings.roleplayAffection(roleplayId)
+    var affectionDelta by remember { mutableStateOf("") }
+    val lastRoleplayTool = messageSnapshot.lastOrNull { it.role == "tool" && it.content.contains("lyra_roleplay_state_v1") }
+    LaunchedEffect(lastRoleplayTool?.id, lastRoleplayTool?.content) {
+        val content = lastRoleplayTool?.content ?: return@LaunchedEffect
+        runCatching {
+            val jsonText = content.substringAfter("lyra_roleplay_state_v1", "").trim()
+            val json = JSONObject(jsonText)
+            val delta = json.optInt("affectionDelta", 0)
+            if (delta != 0) {
+                affectionDelta = if (delta > 0) "+$delta" else delta.toString()
+                kotlinx.coroutines.delay(2600L)
+                affectionDelta = ""
+            }
+        }
+    }
+    LaunchedEffect(visibleMessages.size, visibleMessages.lastOrNull()?.content?.length, isRunning) {
+        if (visibleMessages.isNotEmpty() && !listState.isScrollInProgress) {
+            listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        if (background != null) {
+            Image(
+                bitmap = background,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                alpha = 0.56f,
+            )
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background.copy(alpha = 0.28f)))
+        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (visibleMessages.isEmpty()) {
+                        item("roleplay-empty") {
+                            Text(
+                                "好感度 $affection",
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                    items(visibleMessages, key = { it.id }) { message ->
+                        RoleplayMessageBubble(
+                            message = message,
+                            settings = settings,
+                            aiAvatarPath = scenario?.aiAvatarPath,
+                            stickers = stickers,
+                        )
+                    }
+                    item("roleplay-bottom-anchor") { Spacer(Modifier.height(1.dp)) }
+                }
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.88f))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.Favorite, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Text("好感度 $affection", style = MaterialTheme.typography.labelMedium)
+                    AnimatedVisibility(affectionDelta.isNotBlank()) {
+                        Text(
+                            affectionDelta,
+                            color = if (affectionDelta.startsWith("-")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
+            Card(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
+            ) {
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (pendingUploads.isNotEmpty()) {
+                        PendingUploadStrip(pendingUploads, onRemove = controller::removePendingUpload)
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            onClick = onOpenMenu,
+                            shape = CircleShape,
+                            contentPadding = PaddingValues(0.dp),
+                            modifier = Modifier.size(42.dp),
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "添加")
+                        }
+                        CapsuleTextField(
+                            value = input,
+                            onValueChange = onInputChange,
+                            modifier = Modifier.weight(1f),
+                            minLines = 1,
+                            maxLines = 4,
+                            placeholder = "输入消息",
+                            enabled = !isRunning,
+                        )
+                        AnimatedVisibility(isRunning) {
+                            Button(
+                                modifier = Modifier.size(42.dp),
+                                shape = CircleShape,
+                                contentPadding = PaddingValues(0.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
+                                onClick = onStop,
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.background)
+                            }
+                        }
+                        AnimatedVisibility(canSend && !isRunning) {
+                            Button(
+                                modifier = Modifier.size(42.dp),
+                                enabled = canSend,
+                                shape = CircleShape,
+                                contentPadding = PaddingValues(0.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                onClick = onSend,
+                            ) {
+                                Icon(Icons.Default.Send, contentDescription = "发送", tint = MaterialTheme.colorScheme.onPrimary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun RoleplayMessageBubble(
+    message: ChatRecord,
+    settings: AppSettings,
+    aiAvatarPath: String?,
+    stickers: List<RoleplaySticker>,
+) {
+    val isUser = message.role == "user"
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (!isUser) {
+            UserAvatar(aiAvatarPath, "A", Modifier.size(38.dp))
+            Spacer(Modifier.width(8.dp))
+        }
+        Column(
+            modifier = Modifier.widthIn(max = 292.dp),
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            RoleplayStickerAwareContent(
+                text = message.content,
+                stickers = stickers,
+                isUser = isUser,
+            )
+        }
+        if (isUser) {
+            Spacer(Modifier.width(8.dp))
+            UserAvatar(settings.userAvatarPath, settings.userNickname.take(1).ifBlank { "你" }, Modifier.size(38.dp))
+        }
+    }
+}
+
+@Composable
+internal fun RoleplayStickerAwareContent(
+    text: String,
+    stickers: List<RoleplaySticker>,
+    isUser: Boolean,
+) {
+    val stickerMap = remember(stickers) { stickers.associateBy { it.code } }
+    val regex = remember(stickerMap.keys) {
+        if (stickerMap.isEmpty()) null else Regex(stickerMap.keys.joinToString("|") { Regex.escape(it) })
+    }
+    val parts = remember(text, regex) {
+        if (regex == null) {
+            listOf<Pair<String, RoleplaySticker?>>(text to null)
+        } else buildList<Pair<String, RoleplaySticker?>> {
+            var cursor = 0
+            regex.findAll(text).forEach { match ->
+                if (match.range.first > cursor) add(text.substring(cursor, match.range.first) to null)
+                add(match.value to stickerMap[match.value])
+                cursor = match.range.last + 1
+            }
+            if (cursor < text.length) add(text.substring(cursor) to null)
+        }
+    }
+    parts.forEach { (part, sticker) ->
+        if (sticker != null) {
+            val bitmap = remember(sticker.path) { BitmapFactory.decodeFile(sticker.path)?.asImageBitmap() }
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = sticker.name,
+                    modifier = Modifier
+                        .size(132.dp)
+                        .clip(RoundedCornerShape(12.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        } else if (part.isNotBlank()) {
+            Text(
+                part.trim(),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (isUser) MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
+                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                    )
+                    .padding(horizontal = 13.dp, vertical = 9.dp),
+                color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+    }
+}
+
+private fun AppSettings.settingsRevisionSafe(): Int {
+    return roleplayScenarios().hashCode() * 31 + selectedRoleplayId.hashCode() + immersiveRoleplayEnabled.hashCode()
+}
+
+@Composable
+internal fun EmptyConversationGreeting(
+    showTermuxHint: Boolean,
+    onGrantTermux: () -> Unit,
+    onHideTermuxHint: () -> Unit,
+) {
+    val greeting = remember { timeGreeting() }
+    KimiCardBox {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(greeting.title, style = MaterialTheme.typography.headlineSmall)
+            Text(greeting.message, color = KimiMuted, style = MaterialTheme.typography.bodyLarge)
+            if (showTermuxHint) {
+                KimiDivider()
+                Text(
+                    "更完整的本地开发、运行测试和执行脚本需要 Termux 通信权限。授权后，AI 才能使用 run_command 运行命令并读取 stdout/stderr。",
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KimiChip("授予 Termux 权限", onClick = onGrantTermux)
+                    KimiChip("不再提示", onClick = onHideTermuxHint)
+                }
+            }
+        }
+    }
+}
+
+internal data class GreetingText(val title: String, val message: String)
+
+internal fun timeGreeting(): GreetingText {
+    val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    val title = when (hour) {
+        in 5..8 -> "早上好"
+        in 9..10 -> "上午好"
+        in 11..13 -> "中午好"
+        in 14..17 -> "下午好"
+        in 18..22 -> "晚上好"
+        else -> "凌晨好"
+    }
+    val messages = when (title) {
+        "早上好" -> listOf("今天要做什么工作？我可以帮你拆任务、写代码或查资料。", "新的一天开始了，可以从一个清晰的小目标开始。")
+        "上午好" -> listOf("上午适合处理复杂任务，需要我先帮你规划一下吗？", "有什么项目要推进？可以直接把需求发给我。")
+        "中午好" -> listOf("中午好，先把任务说清楚，我来帮你接着做。", "要不要趁现在整理一下待办和代码问题？")
+        "下午好" -> listOf("下午好，适合做调试、重构和收尾工作。", "今天还有什么工作要完成？")
+        "晚上好" -> listOf("晚上好，可以把今天没处理完的任务交给我继续。", "夜晚适合安静地解决问题，也别忘了休息。")
+        else -> listOf("夜深了，早点睡。要是必须赶工，我可以帮你把任务拆小一点。", "凌晨好，先处理最关键的部分，别把精力浪费在无关问题上。")
+    }
+    val index = kotlin.math.abs((System.currentTimeMillis() / 60_000L).toInt()) % messages.size
+    return GreetingText(title, messages[index])
+}
+
+internal fun requestTermuxRunCommandPermission(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+    if (context.checkSelfPermission(MainActivity.TERMUX_RUN_COMMAND_PERMISSION) == PackageManager.PERMISSION_GRANTED) return
+    (context as? Activity)?.requestPermissions(arrayOf(MainActivity.TERMUX_RUN_COMMAND_PERMISSION), 1001)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AttachmentActionBottomSheet(
+    controller: ChatController,
+    page: String,
+    search: String,
+    onPageChange: (String) -> Unit,
+    onSearchChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onPickFile: () -> Unit,
+    onPickImage: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onFetchModels: () -> Unit,
+) {
+    val profiles = controller.profiles.toList()
+    val activeProfile = profiles.firstOrNull { it.id == controller.activeProfileId.value } ?: profiles.firstOrNull()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = {
+            Box(
+                Modifier
+                    .padding(top = 10.dp, bottom = 8.dp)
+                    .size(width = 54.dp, height = 6.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f)),
+            )
+        },
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            AnimatedContent(
+                targetState = page,
+                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                label = "attachment-action-sheet-page",
+            ) { targetPage ->
+                Column(
+                    Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    when (targetPage) {
+                        "providers" -> {
+                            SheetBackTitle("选择服务商") { onPageChange("root") }
+                            CapsuleTextField(
+                                value = search,
+                                onValueChange = onSearchChange,
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = "搜索服务商",
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted) },
+                            )
+                            val filteredProfiles = profiles.filter { search.isBlank() || it.name.contains(search, ignoreCase = true) }
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                filteredProfiles.forEach { profile ->
+                                    ActionSheetRow(
+                                        icon = Icons.Default.Cloud,
+                                        title = profile.name,
+                                        subtitle = "${profile.apiFormat} · ${profile.baseUrl}",
+                                        trailing = if (profile.id == controller.activeProfileId.value) Icons.Default.Check else null,
+                                        onClick = {
+                                            controller.selectProfile(profile.id)
+                                            onDismiss()
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        "models" -> {
+                            SheetBackTitle("选择模型") { onPageChange("root") }
+                            CapsuleTextField(
+                                value = search,
+                                onValueChange = onSearchChange,
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = "搜索模型",
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted) },
+                            )
+                            val filteredModels = activeProfile?.savedModels.orEmpty()
+                                .filter { search.isBlank() || it.contains(search, ignoreCase = true) }
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                filteredModels.forEach { modelName ->
+                                    ActionSheetRow(
+                                        icon = Icons.Default.SmartToy,
+                                        title = modelName,
+                                        subtitle = activeProfile?.name.orEmpty(),
+                                        trailing = if (modelName == controller.activeModel.value) Icons.Default.Check else null,
+                                        onClick = {
+                                            controller.selectModel(modelName)
+                                            onDismiss()
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                ActionSheetTile(Icons.Default.PhotoLibrary, "相册", Modifier.weight(1f), onPickImage)
+                                ActionSheetTile(Icons.Default.PhotoCamera, "相机", Modifier.weight(1f), onTakePhoto)
+                                ActionSheetTile(Icons.Default.AttachFile, "文件", Modifier.weight(1f), onPickFile)
+                            }
+                            if (controller.isRoleplayMode()) {
+                                KimiDivider()
+                                ActionSheetRow(
+                                    icon = Icons.Default.AddComment,
+                                    title = "新建沉浸对话",
+                                    subtitle = "保留当前角色记忆和好感度",
+                                    onClick = {
+                                        controller.newConversation()
+                                        onDismiss()
+                                    },
+                                )
+                            }
+                            KimiDivider()
+                            ActionSheetRow(
+                                icon = Icons.Default.Cloud,
+                                title = "服务商",
+                                subtitle = activeProfile?.name ?: "未配置",
+                                trailing = Icons.Default.ChevronRight,
+                                onClick = { onPageChange("providers") },
+                            )
+                            ActionSheetRow(
+                                icon = Icons.Default.SmartToy,
+                                title = "模型",
+                                subtitle = controller.activeModel.value.ifBlank { activeProfile?.selectedModel.orEmpty().ifBlank { "未选择" } },
+                                trailing = Icons.Default.ChevronRight,
+                                onClick = { onPageChange("models") },
+                            )
+                            ActionSheetRow(
+                                icon = Icons.Default.Sync,
+                                title = "获取当前平台模型",
+                                subtitle = "从 models 端点刷新可用模型",
+                                onClick = onFetchModels,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SheetBackTitle(title: String, onBack: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+        }
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+internal fun ActionSheetTile(icon: ImageVector, title: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier
+            .height(108.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .padding(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp))
+        Spacer(Modifier.height(10.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+@Composable
+internal fun ActionSheetRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String = "",
+    trailing: ImageVector? = null,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, color = KimiMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        trailing?.let { Icon(it, contentDescription = null, tint = KimiMuted) }
+    }
+}
+
+@Composable
+internal fun DropdownSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+) {
+    Box(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+        CapsuleTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.widthIn(min = 220.dp, max = 320.dp),
+            placeholder = placeholder,
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = KimiMuted) },
+        )
+    }
+}
+
+@Composable
+internal fun PendingUploadStrip(files: List<UploadedFile>, onRemove: (Int) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        files.forEachIndexed { index, file ->
+            if (file.mediaKind == "image") {
+                MediaThumb(file.name, file.content.ifBlank { file.uri }, "image", onRemove = { onRemove(index) })
+            } else if (file.mediaKind == "video" || file.mediaKind == "audio") {
+                MediaPlaceholder(file.name, file.mediaKind, source = file.content.ifBlank { file.uri }, onRemove = { onRemove(index) })
+            } else {
+                KimiChip("${file.name} ×", onClick = { onRemove(index) })
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MediaThumb(name: String, uri: String, kind: String, onRemove: (() -> Unit)? = null) {
+    val context = LocalContext.current
+    var previewOpen by remember { mutableStateOf(false) }
+    val bitmap = remember(uri) {
+        runCatching {
+            decodeMediaPayload(uri)?.let { decoded ->
+                BitmapFactory.decodeByteArray(decoded.bytes, 0, decoded.bytes.size)
+            } ?: context.contentResolver.openInputStream(Uri.parse(uri))?.use { BitmapFactory.decodeStream(it) }
+        }.getOrNull()
+    }
+    Box(
+        Modifier
+            .size(78.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap.asImageBitmap(),
+                contentDescription = name,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable { previewOpen = true },
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Text(
+                kind,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clickable(enabled = kind == "video" || kind == "audio") { previewOpen = true },
+                color = KimiMuted,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        if (onRemove != null) {
+            TextButton(
+                onClick = onRemove,
+                modifier = Modifier.align(Alignment.TopEnd).size(28.dp),
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "移除", modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+    if (previewOpen) {
+        FullscreenMediaPreviewDialog(
+            title = name,
+            source = uri,
+            kind = kind,
+            bitmap = bitmap,
+            onDismiss = { previewOpen = false },
+        )
+    }
+}
+
+@Composable
+internal fun MediaPlaceholder(name: String, kind: String, source: String = "", onRemove: (() -> Unit)? = null) {
+    var previewOpen by remember { mutableStateOf(false) }
+    Box(
+        Modifier
+            .size(width = 118.dp, height = 78.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(enabled = source.isNotBlank() && (kind == "video" || kind == "audio")) { previewOpen = true }
+            .padding(8.dp),
+    ) {
+        Column(Modifier.align(Alignment.CenterStart)) {
+            Text(if (kind == "video") "视频" else "音频", style = MaterialTheme.typography.labelMedium)
+            Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, color = KimiMuted, style = MaterialTheme.typography.labelSmall)
+        }
+        if (onRemove != null) {
+            TextButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd).size(28.dp), contentPadding = PaddingValues(0.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "移除", modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+    if (previewOpen) {
+        FullscreenMediaPreviewDialog(
+            title = name,
+            source = source,
+            kind = kind,
+            onDismiss = { previewOpen = false },
+        )
+    }
+}
+
+internal fun isInternalProcessMessage(message: ChatRecord): Boolean {
+    return message.role == "tool" || (message.role == "assistant" && message.content.isBlank())
+}
+
+internal data class ChatRenderItem(
+    val key: String,
+    val message: ChatRecord? = null,
+    val process: List<ChatRecord> = emptyList(),
+)
+
+internal fun chatRenderItems(messages: List<ChatRecord>): List<ChatRenderItem> {
+    val result = mutableListOf<ChatRenderItem>()
+    val processBuffer = mutableListOf<ChatRecord>()
+    fun flushProcess(beforeId: Long) {
+        if (processBuffer.isNotEmpty()) {
+            val group = processBuffer.toList()
+            result += ChatRenderItem("process-${group.first().id}-${group.last().id}-before-$beforeId", process = group)
+            processBuffer.clear()
+        }
+    }
+    messages.forEach { message ->
+        if (isInternalProcessMessage(message)) {
+            processBuffer += message
+        } else {
+            if (message.role == "assistant") flushProcess(message.id)
+            if (message.role == "user") flushProcess(message.id)
+            result += ChatRenderItem("message-${message.id}", message = message)
+        }
+    }
+    flushProcess(Long.MAX_VALUE)
+    return result
+}
+
+@Composable
+internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: Int) {
+    var expanded by rememberSaveable(messages.firstOrNull()?.id ?: 0L) { mutableStateOf(false) }
+    val toolCount = messages.count { it.role == "tool" }
+    val thinkingCount = messages.count { it.thinking.isNotBlank() || it.role == "assistant" }
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            CollapsedStatusLine(
+                text = if (expanded) "过程记录已展开" else "过程记录已收起 · thinking $thinkingCount / 工具 $toolCount",
+                expanded = expanded,
+                onClick = { expanded = !expanded },
+            )
+            AnimatedVisibility(expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    messages.forEach { MessageCard(it, selectionResetKey) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ToolApprovalDialog(
+    pending: PendingToolApproval,
+    onApprove: (rememberConversation: Boolean) -> Unit,
+    onReject: (feedback: String) -> Unit,
+) {
+    var feedback by rememberSaveable(pending.id) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("确认工具调用") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(pending.request.summary, style = MaterialTheme.typography.titleSmall)
+                Text(pending.request.risk, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                SelectionContainer {
+                    Text(
+                        pending.request.arguments,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                            .verticalScroll(rememberScrollState())
+                            .horizontalScroll(rememberScrollState()),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    )
+                }
+                OutlinedTextField(
+                    value = feedback,
+                    onValueChange = { feedback = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                    label = { Text("拒绝时给 AI 的修改要求") },
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { onApprove(true) }) { Text("本会话无需确认") }
+                Button(onClick = { onApprove(false) }) { Text("同意") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onReject(feedback) }) { Text("不同意") }
+        },
+    )
+}
+
+@Composable
+internal fun TodoProgressPanel(settings: AppSettings, conversationId: Long, items: List<TodoItem>) {
+    if (items.isEmpty()) return
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    val signature = remember(items) { items.joinToString("|") { "${it.id}:${it.status}:${it.text}:${it.note}" } }
+    var hiddenSignature by remember(conversationId) { mutableStateOf(settings.hiddenTodoSignature(conversationId)) }
+    var dragX by remember { mutableStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    val animatedDragX by animateFloatAsState(targetValue = dragX, label = "todo-panel-drag")
+    val panelDragX = if (isDragging) dragX else animatedDragX
+    val completed = items.count { it.status == "completed" }
+    AnimatedVisibility(visible = hiddenSignature != signature, enter = fadeIn(), exit = fadeOut()) {
+        Card(
+            Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    translationX = panelDragX.coerceAtMost(0f)
+                    alpha = 1f - ((-translationX) / 420f).coerceIn(0f, 0.45f)
+                }
+                .pointerInput(signature) {
+                    detectDragGestures(
+                        onDragStart = { isDragging = true },
+                        onDragEnd = {
+                            isDragging = false
+                            if (dragX < -120f) {
+                                hiddenSignature = signature
+                                settings.setHiddenTodoSignature(conversationId, signature)
+                            }
+                            dragX = 0f
+                        },
+                        onDragCancel = {
+                            isDragging = false
+                            dragX = 0f
+                        },
+                    ) { change, dragAmount ->
+                        change.consume()
+                        dragX = (dragX + dragAmount.x).coerceIn(-420f, 0f)
+                    }
+                },
+        ) {
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("TODO $completed/${items.size}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                    TextButton(onClick = { expanded = !expanded }) {
+                        Text(if (expanded) "收纳" else "展开")
+                    }
+                }
+                AnimatedVisibility(expanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        items.forEach { item ->
+                            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(todoStatusMark(item.status), color = todoStatusColor(item.status), style = MaterialTheme.typography.bodyMedium)
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.text, style = MaterialTheme.typography.bodyMedium)
+                                    if (item.note.isNotBlank()) {
+                                        Text(item.note, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+internal fun todoStatusMark(status: String): String = when (status) {
+    "running" -> "..."
+    "completed" -> "✓"
+    "blocked" -> "!"
+    else -> "○"
+}
+
+@Composable
+internal fun todoStatusColor(status: String): Color = when (status) {
+    "running" -> MaterialTheme.colorScheme.primary
+    "completed" -> Color(0xFF188038)
+    "blocked" -> MaterialTheme.colorScheme.error
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+internal data class ConversationFileChange(
+    val messageId: Long,
+    val index: Int,
+    val change: FileChangeView,
+) {
+    val key: String = "$messageId:$index:${change.path}"
+}
+
+@Composable
+internal fun ConversationChangesPanel(settings: AppSettings, conversationId: Long, messages: List<ChatRecord>) {
+    val events = remember(messages) {
+        messages.flatMap { message ->
+            parseFileChanges(message.content).mapIndexed { index, change ->
+                ConversationFileChange(message.id, index, change)
+            }
+        }.takeLast(20)
+      }
+      if (events.isEmpty()) return
+      val signature = remember(events) { events.joinToString("|") { it.key } }
+      var hiddenSignature by remember(conversationId) { mutableStateOf(settings.hiddenFileChangesSignature(conversationId)) }
+      var dragX by remember { mutableStateOf(0f) }
+      var isDragging by remember { mutableStateOf(false) }
+      val animatedDragX by animateFloatAsState(targetValue = dragX, label = "changes-panel-drag")
+      val panelDragX = if (isDragging) dragX else animatedDragX
+
+      var expanded by rememberSaveable { mutableStateOf(true) }
+    var openedKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val totalAdded = events.sumOf { it.change.added }
+    val totalRemoved = events.sumOf { it.change.removed }
+
+      AnimatedVisibility(visible = hiddenSignature != signature, enter = fadeIn(), exit = fadeOut()) {
+      Card(
+          Modifier
+              .fillMaxWidth()
+              .graphicsLayer {
+                  translationX = panelDragX.coerceAtMost(0f)
+                  alpha = 1f - ((-translationX) / 420f).coerceIn(0f, 0.45f)
+              }
+              .pointerInput(signature) {
+                  detectDragGestures(
+                      onDragStart = { isDragging = true },
+                      onDragEnd = {
+                          isDragging = false
+                          if (dragX < -120f) {
+                              hiddenSignature = signature
+                              settings.setHiddenFileChangesSignature(conversationId, signature)
+                          }
+                          dragX = 0f
+                      },
+                      onDragCancel = {
+                          isDragging = false
+                          dragX = 0f
+                      },
+                  ) { change, dragAmount ->
+                      change.consume()
+                      dragX = (dragX + dragAmount.x).coerceIn(-420f, 0f)
+                  }
+              },
+      ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("文件变更 ${events.size}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                Text("+$totalAdded", color = Color(0xFF188038), style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.width(8.dp))
+                Text("-$totalRemoved", color = Color(0xFFD93025), style = MaterialTheme.typography.labelMedium)
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "收纳" else "展开")
+                }
+            }
+            AnimatedVisibility(expanded) {
+                LazyColumn(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 520.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(events.asReversed(), key = { it.key }) { event ->
+                        val change = event.change
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    openedKey = if (openedKey == event.key) null else event.key
+                                }
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(fileNameForDisplay(change.path), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                                    Text(change.path, color = KimiMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Text("+${change.added}", color = Color(0xFF188038), style = MaterialTheme.typography.labelMedium)
+                                Spacer(Modifier.width(8.dp))
+                                Text("-${change.removed}", color = Color(0xFFD93025), style = MaterialTheme.typography.labelMedium)
+                            }
+                            Text(
+                                if (openedKey == event.key) "收起变更详情" else "点击审视变更前后代码",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            AnimatedVisibility(openedKey == event.key) {
+                                FileChangeDetail(change)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+@Composable
+internal fun ModelToolbar(controller: ChatController) {
+    var profileExpanded by remember { mutableStateOf(false) }
+    var modelExpanded by remember { mutableStateOf(false) }
+    val profiles = controller.profiles.toList()
+    val profile = profiles.firstOrNull { it.id == controller.activeProfileId.value } ?: profiles.firstOrNull()
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(0.9f)) {
+            OutlinedButton(onClick = { profileExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(profile?.name ?: "平台", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(expanded = profileExpanded, onDismissRequest = { profileExpanded = false }) {
+                profiles.forEach {
+                    DropdownMenuItem(text = { Text(it.name) }, onClick = {
+                        profileExpanded = false
+                        controller.selectProfile(it.id)
+                    })
+                }
+            }
+        }
+        Box(Modifier.weight(1.1f)) {
+            OutlinedButton(onClick = { modelExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(controller.activeModel.value.ifBlank { "模型" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
+                profile?.savedModels.orEmpty().forEach { model ->
+                    DropdownMenuItem(text = { Text(model) }, onClick = {
+                        modelExpanded = false
+                        controller.selectModel(model)
+                    })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MessageCard(message: ChatRecord, selectionResetKey: Int = 0) {
+    val visibleContent = displayMessageContent(message)
+    val mediaPreviews = remember(message.content) { uploadedMediaPreviews(message.content) }
+    val container = when (message.role) {
+        "user" -> MaterialTheme.colorScheme.surfaceVariant
+        "tool" -> MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+        else -> Color.Transparent
+    }
+    val clipboard = LocalClipboardManager.current
+    var showThinking by rememberSaveable(message.id) { mutableStateOf(false) }
+    var showToolResult by rememberSaveable(message.id) { mutableStateOf(false) }
+    val isUser = message.role == "user"
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = container),
+            shape = if (isUser) RoundedCornerShape(20.dp) else RoundedCornerShape(18.dp),
+            border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            modifier = if (isUser) Modifier.widthIn(max = 330.dp) else Modifier.fillMaxWidth(),
+        ) {
+        Column(Modifier.padding(if (isUser) 14.dp else 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    when (message.role) {
+                        "assistant" -> "Lyra"
+                        "tool" -> "工具结果"
+                        else -> "你"
+                    },
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                if (message.model.isNotBlank()) Text(message.model, style = MaterialTheme.typography.labelSmall)
+                IconButton(
+                    onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "复制", modifier = Modifier.size(18.dp))
+                }
+            }
+            if (message.thinking.isNotBlank()) {
+                CollapsedStatusLine(
+                    text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
+                    expanded = showThinking,
+                    onClick = { showThinking = !showThinking },
+                )
+                AnimatedVisibility(showThinking) {
+                    key(selectionResetKey) {
+                        SelectionContainer {
+                            Text(message.thinking, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
+                        }
+                    }
+                }
+            }
+            if (message.role == "tool") {
+                ToolResultContent(
+                    content = message.content,
+                    expanded = showToolResult,
+                    onToggle = { showToolResult = !showToolResult },
+                )
+            } else {
+                if (isUser && mediaPreviews.isNotEmpty()) {
+                    UploadedMediaGrid(mediaPreviews)
+                }
+                if (visibleContent.isNotBlank()) {
+                    key(selectionResetKey) {
+                        SelectionContainer {
+                            RichMarkdownContent(visibleContent)
+                        }
+                    }
+                } else if (message.role == "assistant") {
+                    Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        }
+    }
+}
+
+@Composable
+internal fun CollapsedStatusLine(
+    text: String,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(KimiPillShape)
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, modifier = Modifier.weight(1f), color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+        Icon(
+            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = if (expanded) "收起" else "展开",
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+internal fun ContinueInterruptedRow(onContinue: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)))
+        KimiChip("继续对话", onClick = onContinue)
+        Box(Modifier.weight(1f).height(1.dp).background(MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)))
+    }
+}
+
+internal data class UploadedMediaPreview(
+    val name: String,
+    val kind: String,
+    val mimeType: String,
+    val uri: String,
+)
+
+@Composable
+internal fun UploadedMediaGrid(media: List<UploadedMediaPreview>) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        media.forEach { item ->
+            if (item.kind == "image") {
+                MediaThumb(item.name, item.uri, item.kind)
+            } else {
+                MediaPlaceholder(item.name, item.kind, source = item.uri)
+            }
+        }
+    }
+}
+
+internal fun uploadedMediaPreviews(content: String): List<UploadedMediaPreview> {
+    val regex = Regex("用户上传媒体：([^\\n]+)\\n类型：([^\\n]+)\\nMIME：([^\\n]*)\\n(?:DATA_URL：([^\\n]*)\\n)?URI：([^\\n]*)", RegexOption.MULTILINE)
+    return regex.findAll(content).map {
+        UploadedMediaPreview(
+            name = it.groupValues[1].trim(),
+            kind = it.groupValues[2].trim(),
+            mimeType = it.groupValues[3].trim(),
+            uri = it.groupValues[4].trim().ifBlank { it.groupValues[5].trim() },
+        )
+    }.toList()
+}
+
+internal fun displayMessageContent(message: ChatRecord): String {
+    if (message.role != "user") return message.content
+    val withoutMedia = stripUploadedMediaBlocks(message.content)
+    if (!withoutMedia.contains("用户上传文件：")) return withoutMedia
+    val marker = "用户上传文件："
+    val textPart = withoutMedia.substringBefore(marker).trim()
+    val fileNames = withoutMedia.lineSequence()
+        .map { it.trim() }
+        .filter { it.startsWith(marker) }
+        .map { it.removePrefix(marker).trim().ifBlank { "未命名文件" } }
+        .toList()
+    return buildString {
+        if (textPart.isNotBlank()) {
+            append(textPart)
+            append("\n\n")
+        }
+        append("已上传文件：")
+        append(fileNames.joinToString("、"))
+    }
+}
+
+internal fun stripUploadedMediaBlocks(content: String): String {
+    return content.replace(
+        Regex("\\n*用户上传媒体：[^\\n]+\\n类型：[^\\n]+\\nMIME：[^\\n]*\\n(?:DATA_URL：[^\\n]*\\n)?URI：[^\\n]*\\n大小：[^\\n]*(\\n)?"),
+        "\n",
+    ).trim()
+}
+
+@Composable
+internal fun ToolResultContent(content: String, expanded: Boolean, onToggle: () -> Unit) {
+    val preview = remember(content) {
+        content.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().ifBlank { "空结果" }.take(180)
+    }
+    val changes = remember(content) { parseFileChanges(content) }
+    var expandedChangePath by rememberSaveable(content) { mutableStateOf<String?>(null) }
+    CollapsedStatusLine(
+        text = if (expanded) "工具调用详情已展开" else "使用工具中... / 工具结果已收起",
+        expanded = expanded,
+        onClick = onToggle,
+    )
+    if (!expanded) return
+    if (expanded) {
+        Text(
+            "工具返回 ${content.length} 字符：$preview",
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    changes.forEach { change ->
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(fileNameForDisplay(change.path), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
+                        Text(change.path, color = KimiMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Text("+${change.added}", color = Color(0xFF188038), style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(8.dp))
+                    Text("-${change.removed}", color = Color(0xFFD93025), style = MaterialTheme.typography.labelMedium)
+                }
+                TextButton(onClick = { expandedChangePath = if (expandedChangePath == change.path) null else change.path }) {
+                    Text(if (expandedChangePath == change.path) "收起变更" else "审视变更")
+                }
+                AnimatedVisibility(expandedChangePath == change.path) {
+                    FileChangeDetail(change)
+                }
+            }
+        }
+    }
+    AnimatedVisibility(expanded) {
+        SelectionContainer {
+            Text(
+                content.ifBlank { "..." },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+                    .horizontalScroll(rememberScrollState()),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        }
+    }
+}
+
+internal data class FileChangeView(
+    val path: String,
+    val added: Int,
+    val removed: Int,
+    val diff: String,
+    val before: String,
+    val after: String,
+)
+
+internal fun fileNameForDisplay(path: String): String {
+    return path.trim().replace('\\', '/').substringAfterLast('/').ifBlank { path.ifBlank { "未命名文件" } }
+}
+
+@Composable
+internal fun FileChangeDetail(change: FileChangeView) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = 560.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("差异", style = MaterialTheme.typography.labelMedium)
+        DiffView(change.diff.ifBlank { "(无行级差异)" })
+        CodeSnapshot(
+            title = "变更前",
+            content = change.before,
+            color = Color(0xFFD93025),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        CodeSnapshot(
+            title = "变更后",
+            content = change.after,
+            color = Color(0xFF188038),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+internal fun CodeSnapshot(title: String, content: String, color: Color, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.75f))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(title, color = color, style = MaterialTheme.typography.labelMedium)
+        SelectionContainer {
+            Text(
+                content.ifBlank { "(空)" },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 220.dp)
+                    .horizontalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState()),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun DiffView(diff: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = 240.dp)
+            .verticalScroll(rememberScrollState())
+            .horizontalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        diff.lineSequence().forEach { line ->
+            val color = when {
+                line.startsWith("+ ") -> Color(0xFF188038)
+                line.startsWith("- ") -> Color(0xFFD93025)
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+            Text(
+                line,
+                color = color,
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        }
+    }
+}
+
+internal fun parseFileChanges(content: String): List<FileChangeView> {
+    parseJsonFileChanges(content).takeIf { it.isNotEmpty() }?.let { return it }
+    val regex = Regex("LYRA_FILE_CHANGE_BEGIN\\n(.*?)\\nLYRA_FILE_CHANGE_END", RegexOption.DOT_MATCHES_ALL)
+    return regex.findAll(content).mapNotNull { match ->
+        val body = match.groupValues[1]
+        val path = body.lineSequence().firstOrNull { it.startsWith("path: ") }?.removePrefix("path: ")?.trim().orEmpty()
+        val added = body.lineSequence().firstOrNull { it.startsWith("added: ") }?.removePrefix("added: ")?.trim()?.toIntOrNull() ?: 0
+        val removed = body.lineSequence().firstOrNull { it.startsWith("removed: ") }?.removePrefix("removed: ")?.trim()?.toIntOrNull() ?: 0
+        val diffAndSnapshots = body.substringAfter("diff:\n", "")
+        val diff = diffAndSnapshots.substringBefore("\nLYRA_FILE_BEFORE_BEGIN", diffAndSnapshots).trimEnd()
+        val before = extractMarkedSection(body, "LYRA_FILE_BEFORE_BEGIN", "LYRA_FILE_BEFORE_END")
+        val after = extractMarkedSection(body, "LYRA_FILE_AFTER_BEGIN", "LYRA_FILE_AFTER_END")
+        if (path.isBlank()) null else FileChangeView(path, added, removed, diff, before, after)
+    }.toList()
+}
+
+internal fun parseJsonFileChanges(content: String): List<FileChangeView> {
+    val root = runCatching { JSONObject(content) }.getOrNull() ?: return emptyList()
+    val changes = root.optJSONArray("file_changes") ?: JSONArray()
+    return buildList {
+        for (index in 0 until changes.length()) {
+            val change = changes.optJSONObject(index) ?: continue
+            val path = change.optString("path")
+            if (path.isBlank()) continue
+            add(
+                FileChangeView(
+                    path = path,
+                    added = change.optInt("added", 0),
+                    removed = change.optInt("removed", 0),
+                    diff = change.optString("diff"),
+                    before = change.optString("before"),
+                    after = change.optString("after"),
+                ),
+            )
+        }
+    }
+}
+
+internal fun extractMarkedSection(text: String, start: String, end: String): String {
+    val afterStart = text.substringAfter("$start\n", missingDelimiterValue = "")
+    if (afterStart.isBlank()) return ""
+    return afterStart.substringBefore("\n$end", afterStart).trimEnd()
+}
+
+internal sealed class MarkdownBlock {
+    data class Heading(val level: Int, val text: String) : MarkdownBlock()
+    data class Paragraph(val text: String) : MarkdownBlock()
+    data class Code(val language: String, val code: String) : MarkdownBlock()
+    data class Quote(val text: String) : MarkdownBlock()
+    data class Bullet(val text: String) : MarkdownBlock()
+    data class Numbered(val number: String, val text: String) : MarkdownBlock()
+    data class ListItems(val ordered: Boolean, val items: List<MarkdownListItem>) : MarkdownBlock()
+    data class Table(val rows: List<List<String>>) : MarkdownBlock()
+    data class Math(val formula: String, val display: Boolean) : MarkdownBlock()
+    object Spacer : MarkdownBlock()
+}
+
+

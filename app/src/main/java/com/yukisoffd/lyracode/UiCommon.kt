@@ -1,0 +1,495 @@
+package com.yukisoffd.lyracode
+
+import android.Manifest
+import android.app.Activity
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.provider.MediaStore
+import android.util.Base64
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.MediaController
+import android.widget.VideoView
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.DrawerValue
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import com.yukisoffd.lyracode.ai.ChatRecord
+import com.yukisoffd.lyracode.ai.AiResponseCache
+import com.yukisoffd.lyracode.ai.OpenAiAgent
+import com.yukisoffd.lyracode.ai.TodoItem
+import com.yukisoffd.lyracode.ai.WebViewWebAgent
+import com.yukisoffd.lyracode.data.ApiProfile
+import com.yukisoffd.lyracode.data.AppSettings
+import com.yukisoffd.lyracode.data.AuditEntry
+import com.yukisoffd.lyracode.data.AuditLogStore
+import com.yukisoffd.lyracode.data.BackupManager
+import com.yukisoffd.lyracode.data.BackupOptions
+import com.yukisoffd.lyracode.data.Conversation
+import com.yukisoffd.lyracode.data.ConversationStore
+import com.yukisoffd.lyracode.data.McpServerConfig
+import com.yukisoffd.lyracode.data.McpToolDefinition
+import com.yukisoffd.lyracode.data.SkillPack
+import com.yukisoffd.lyracode.data.SshServerConfig
+import com.yukisoffd.lyracode.data.WebDavServerConfig
+import com.yukisoffd.lyracode.mcp.McpClientManager
+import com.yukisoffd.lyracode.ssh.SshExecutor
+import com.yukisoffd.lyracode.termux.TermuxExecutor
+import com.yukisoffd.lyracode.webdav.TransferProgress
+import com.yukisoffd.lyracode.webdav.WebDavClient
+import com.yukisoffd.lyracode.workspace.GlobalFileManager
+import com.yukisoffd.lyracode.workspace.NativeFileManager
+import com.yukisoffd.lyracode.workspace.UploadedFile
+import com.yukisoffd.lyracode.workspace.UploadedFileManager
+import com.yukisoffd.lyracode.workspace.WorkspaceManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URL
+import java.util.Date
+import java.util.Locale
+import kotlin.math.min
+import kotlin.math.max
+import kotlin.math.abs
+import android.graphics.Canvas as AndroidCanvas
+
+@Composable
+internal fun LyraCodeTheme(darkMode: Boolean, content: @Composable () -> Unit) {
+    val light = lightColorScheme(
+        primary = Color(0xFF181818),
+        secondary = Color(0xFF4E7DFF),
+        background = Color(0xFFF6F6F4),
+        surface = Color(0xFFFFFFFF),
+        surfaceVariant = Color(0xFFEDEDEB),
+        onBackground = Color(0xFF111111),
+        onSurface = Color(0xFF171717),
+        onSurfaceVariant = Color(0xFF6F6F6F),
+    )
+    val dark = darkColorScheme(
+        primary = Color(0xFFE8E8E8),
+        secondary = Color(0xFF70A4FF),
+        background = KimiBg,
+        surface = KimiCard,
+        surfaceVariant = KimiCardAlt,
+        onBackground = Color(0xFFE8E8E8),
+        onSurface = Color(0xFFE6E6E6),
+        onSurfaceVariant = Color(0xFF8E8E8E),
+        outline = KimiLine,
+    )
+    MaterialTheme(colorScheme = if (darkMode) dark else light, content = content)
+}
+
+internal val KimiBg = Color(0xFF0B0B0B)
+internal val KimiCard = Color(0xFF202020)
+internal val KimiCardAlt = Color(0xFF2A2A2A)
+internal val KimiLine = Color(0xFF3A3A3A)
+internal val KimiMuted = Color(0xFF8E8E8E)
+internal val KimiGreen = Color(0xFF62B47B)
+internal val KimiRed = Color(0xFFE06464)
+internal val KimiBlue = Color(0xFF70A4FF)
+internal val KimiCardShape = RoundedCornerShape(26.dp)
+internal val KimiPillShape = RoundedCornerShape(999.dp)
+
+@Composable
+internal fun KimiCardBox(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = KimiCardShape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    }
+}
+
+@Composable
+internal fun KimiDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+    )
+}
+
+@Composable
+internal fun KimiSectionLabel(text: String) {
+    Text(
+        text,
+        modifier = Modifier.padding(start = 22.dp, top = 8.dp, bottom = 4.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.titleSmall,
+    )
+}
+
+@Composable
+internal fun KimiMenuRow(
+    icon: String,
+    title: String,
+    value: String = "",
+    onClick: () -> Unit = {},
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(icon, modifier = Modifier.width(42.dp), style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (value.isNotBlank()) {
+                Text(
+                    value,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleLarge)
+    }
+}
+
+@Composable
+internal fun KimiMenuRow(
+    icon: ImageVector,
+    title: String,
+    value: String = "",
+    onClick: () -> Unit = {},
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(42.dp), contentAlignment = Alignment.CenterStart) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (value.isNotBlank()) {
+                Text(
+                    value,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Icon(
+            Icons.Default.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+internal fun PlusBadgeIcon(
+    baseIcon: @Composable () -> Unit,
+) {
+    Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+            baseIcon()
+        }
+        Text(
+            "+",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .background(MaterialTheme.colorScheme.background, CircleShape)
+                .padding(horizontal = 1.dp),
+            color = MaterialTheme.colorScheme.onBackground,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+        )
+    }
+}
+
+@Composable
+internal fun KimiChip(
+    text: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit = {},
+) {
+    Text(
+        text,
+        modifier = modifier
+            .clip(KimiPillShape)
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        color = MaterialTheme.colorScheme.onSurface,
+        style = MaterialTheme.typography.bodyMedium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+internal fun TransientNotice(
+    message: String,
+    modifier: Modifier = Modifier,
+    durationMillis: Long = 2400L,
+    onDismiss: () -> Unit,
+) {
+    var visible by remember(message) { mutableStateOf(message.isNotBlank()) }
+    LaunchedEffect(message) {
+        if (message.isBlank()) return@LaunchedEffect
+        visible = true
+        kotlinx.coroutines.delay(durationMillis)
+        visible = false
+        kotlinx.coroutines.delay(220)
+        onDismiss()
+    }
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        AnimatedVisibility(
+            visible = visible && message.isNotBlank(),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Surface(
+                shape = KimiPillShape,
+                color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.94f),
+                tonalElevation = 8.dp,
+                shadowElevation = 8.dp,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.inverseOnSurface)
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ConfirmDeleteDialog(
+    title: String,
+    message: String,
+    targetName: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    var remaining by remember(title, targetName) { mutableIntStateOf(3) }
+    LaunchedEffect(title, targetName) {
+        remaining = 3
+        repeat(3) {
+            kotlinx.coroutines.delay(1000)
+            remaining--
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message, color = KimiMuted, style = MaterialTheme.typography.bodyMedium)
+                Text(targetName, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (remaining > 0) "请等待 $remaining 秒后确认删除。" else "删除后无法自动恢复，请确认。",
+                    color = if (remaining > 0) KimiMuted else MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = remaining <= 0,
+                onClick = {
+                    onConfirm()
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) {
+                Text(if (remaining > 0) "删除 ($remaining)" else "确认删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
+}
+

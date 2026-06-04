@@ -1,0 +1,82 @@
+Lyra Code Dual License / Lyra Code 双重许可
+
+Version / 版本: 1.1
+
+Copyright (c) Lyra Code contributors.
+
+IMPORTANT: This project contains first-party Lyra Code source code and third-party components. This license applies only to the original Lyra Code source code in this repository, unless a file or directory clearly states otherwise. Third-party dependencies, libraries, forks, SDKs, fonts, icons, build tools, and code imported from other repositories remain governed by their own licenses.
+
+重要说明：本项目包含 Lyra Code 第一方源代码以及第三方组件。除非某个文件或目录另有明确说明，本许可仅适用于本仓库中的 Lyra Code 原创源代码。第三方依赖、库、fork、SDK、字体、图标、构建工具，以及从其他仓库引入的代码，仍以其各自许可证为准。
+
+1. Dual Licensing / 双重许可
+
+The original Lyra Code source code is offered under a dual-license model:
+
+Lyra Code 原创源代码采用双重许可模式：
+
+Option A: GNU Affero General Public License version 3 or later (AGPLv3-or-later).
+
+选项 A：GNU Affero General Public License version 3 or later（AGPLv3-or-later）。
+
+Option B: A separate commercial license granted by the copyright holder.
+
+选项 B：由版权持有人另行授予的商业许可证。
+
+2. AGPLv3-or-later License / AGPLv3-or-later 许可
+
+You may use, copy, modify, distribute, and deploy the original Lyra Code source code under AGPLv3-or-later. This option is available to all users, including individuals, organizations, non-commercial users, educational users, research users, and commercial users, provided that they comply with AGPLv3-or-later.
+
+您可以依据 AGPLv3-or-later 使用、复制、修改、分发和部署 Lyra Code 原创源代码。该选项适用于所有用户，包括个人、组织、非商业用户、教育用户、研究用户和商业用户，但前提是必须遵守 AGPLv3-or-later。
+
+In particular, if you modify the project, distribute it, or provide it as a network service, you must comply with the source code disclosure and copyleft obligations of AGPLv3-or-later.
+
+特别是，如果您修改、分发本项目，或以网络服务形式提供本项目，您必须遵守 AGPLv3-or-later 关于源代码公开和 copyleft 的相关义务。
+
+You should have received a copy of AGPLv3 with this project. If not, see:
+https://www.gnu.org/licenses/agpl-3.0.html
+
+您应当已经随本项目收到 AGPLv3 许可证文本。如未收到，请参见：
+https://www.gnu.org/licenses/agpl-3.0.html
+
+3. Commercial License / 商业许可证
+
+If you want to use the original Lyra Code source code in a closed-source product, proprietary application, commercial distribution, hosted service, internal enterprise deployment, or any other context where you cannot or do not want to comply with AGPLv3-or-later, you must obtain a separate commercial license from the copyright holder.
+
+如果您希望在闭源产品、专有应用、商业分发、托管服务、企业内部部署，或任何无法或不希望遵守 AGPLv3-or-later 的场景中使用 Lyra Code 原创源代码，您必须向版权持有人获取单独的商业许可证。
+
+Organizations with more than 10 users, commercial users, and users who need closed-source distribution, private modifications, warranty terms, support terms, or AGPL exceptions are encouraged to contact the copyright holder for a commercial license.
+
+超过 10 人的组织、商业用户，以及需要闭源分发、私有修改、担保条款、支持条款或 AGPL 例外授权的用户，建议联系版权持有人获取商业许可证。
+
+The commercial license applies only to rights that the copyright holder can grant for the original Lyra Code source code. It does not relicense third-party components.
+
+商业许可证仅适用于版权持有人有权授权的 Lyra Code 原创源代码。商业许可证不会重新授权第三方组件。
+
+4. Third-Party Components / 第三方组件
+
+Third-party components remain under their own licenses. You are responsible for complying with those licenses when using, modifying, distributing, or commercially licensing a combined work.
+
+第三方组件仍以其各自许可证为准。在使用、修改、分发或商业授权组合作品时，您有责任遵守这些第三方许可证。
+
+For example, this repository may include or depend on components under Apache License 2.0, BSD/ISC-style licenses, GPL-compatible licenses, and other licenses. Some components may impose source disclosure, attribution, notice, font-license, or linking requirements. A commercial Lyra Code license does not waive those third-party requirements.
+
+例如，本仓库可能包含或依赖 Apache License 2.0、BSD/ISC 风格许可证、GPL 兼容许可证及其他许可证下的组件。部分组件可能要求公开源代码、保留署名、保留 NOTICE、遵守字体许可证或满足链接例外条件。Lyra Code 商业许可证不会豁免这些第三方要求。
+
+5. No Trademark Grant / 不授予商标权
+
+This license does not grant any trademark, trade name, logo, or branding rights. You may not imply endorsement by the Lyra Code project or its contributors without written permission.
+
+本许可不授予任何商标、商号、Logo 或品牌权利。未经书面许可，您不得暗示 Lyra Code 项目或贡献者对您的产品、服务或分发版本作出背书。
+
+6. No Warranty / 无担保
+
+The project is provided "as is", without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement. You are responsible for reviewing tool execution, data handling, network requests, backups, credentials, and security risks before use.
+
+本项目按“原样”提供，不作任何明示或默示担保，包括但不限于适销性、特定用途适用性和不侵权担保。在使用前，您应自行审查工具执行、数据处理、网络请求、备份、凭据和安全风险。
+
+7. Conflict Resolution / 冲突处理
+
+If there is a conflict between the English and Chinese text, both texts should be interpreted in good faith according to the same licensing intent. For third-party components, their original licenses prevail over this project-level license.
+
+如果英文文本和中文文本存在理解差异，应按照相同许可意图进行善意解释。对于第三方组件，其原始许可证优先于本项目级许可证。
+

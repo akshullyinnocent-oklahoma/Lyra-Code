@@ -1,0 +1,513 @@
+package com.yukisoffd.lyracode.data
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class Conversation(
+    val id: Long,
+    val title: String,
+    val status: String,
+    val profileId: String,
+    val model: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val pinnedAt: Long,
+    val mode: String = ConversationStore.MODE_NORMAL,
+    val roleplayId: String = "",
+)
+
+data class ChatMessage(
+    val id: Long,
+    val conversationId: Long,
+    val role: String,
+    val content: String,
+    val thinking: String,
+    val profileId: String,
+    val model: String,
+    val toolCallId: String?,
+    val rawJson: String?,
+    val createdAt: Long,
+)
+
+class ConversationStore(context: Context) : SQLiteOpenHelper(
+    context.applicationContext,
+    "lyra_conversations.db",
+    null,
+    3,
+) {
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                pinned_at INTEGER NOT NULL DEFAULT 0,
+                mode TEXT NOT NULL DEFAULT 'normal',
+                roleplay_id TEXT NOT NULL DEFAULT ''
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                thinking TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                tool_call_id TEXT,
+                raw_json TEXT,
+                created_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE conversations ADD COLUMN pinned_at INTEGER NOT NULL DEFAULT 0")
+        }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'normal'")
+            db.execSQL("ALTER TABLE conversations ADD COLUMN roleplay_id TEXT NOT NULL DEFAULT ''")
+        }
+    }
+
+    fun createConversation(
+        profileId: String,
+        model: String,
+        title: String = "新对话",
+        mode: String = MODE_NORMAL,
+        roleplayId: String = "",
+    ): Long {
+        val now = System.currentTimeMillis()
+        return writableDatabase.insert(
+            "conversations",
+            null,
+            ContentValues().apply {
+                put("title", title)
+                put("status", STATUS_IDLE)
+                put("profile_id", profileId)
+                put("model", model)
+                put("created_at", now)
+                put("updated_at", now)
+                put("mode", mode)
+                put("roleplay_id", roleplayId)
+            },
+        )
+    }
+
+    private fun createImportedConversation(
+        profileId: String,
+        model: String,
+        title: String,
+        status: String,
+        createdAt: Long,
+        updatedAt: Long,
+        pinnedAt: Long,
+        mode: String,
+        roleplayId: String,
+    ): Long {
+        return writableDatabase.insert(
+            "conversations",
+            null,
+            ContentValues().apply {
+                put("title", title.take(120))
+                put("status", status)
+                put("profile_id", profileId)
+                put("model", model)
+                put("created_at", createdAt)
+                put("updated_at", updatedAt)
+                put("pinned_at", pinnedAt)
+                put("mode", mode)
+                put("roleplay_id", roleplayId)
+            },
+        )
+    }
+
+    fun conversations(mode: String? = null, roleplayId: String? = null): List<Conversation> {
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        mode?.let {
+            clauses += "mode=?"
+            args += it
+        }
+        roleplayId?.let {
+            clauses += "roleplay_id=?"
+            args += it
+        }
+        val cursor = readableDatabase.query(
+            "conversations",
+            arrayOf("id", "title", "status", "profile_id", "model", "created_at", "updated_at", "pinned_at", "mode", "roleplay_id"),
+            clauses.joinToString(" AND ").ifBlank { null },
+            args.toTypedArray().ifEmpty { null },
+            null,
+            null,
+            "CASE WHEN pinned_at > 0 THEN 0 ELSE 1 END ASC, pinned_at DESC, updated_at DESC",
+        )
+        return cursor.use {
+            buildList {
+                while (it.moveToNext()) {
+                    add(
+                        Conversation(
+                            id = it.getLong(0),
+                            title = it.getString(1),
+                            status = it.getString(2),
+                            profileId = it.getString(3),
+                            model = it.getString(4),
+                            createdAt = it.getLong(5),
+                            updatedAt = it.getLong(6),
+                            pinnedAt = it.getLong(7),
+                            mode = it.getString(8),
+                            roleplayId = it.getString(9),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun conversation(id: Long): Conversation? {
+        return readableDatabase.query(
+            "conversations",
+            arrayOf("id", "title", "status", "profile_id", "model", "created_at", "updated_at", "pinned_at", "mode", "roleplay_id"),
+            "id=?",
+            arrayOf(id.toString()),
+            null,
+            null,
+            null,
+        ).use {
+            if (!it.moveToFirst()) return null
+            Conversation(it.getLong(0), it.getString(1), it.getString(2), it.getString(3), it.getString(4), it.getLong(5), it.getLong(6), it.getLong(7), it.getString(8), it.getString(9))
+        }
+    }
+
+    fun setPinned(id: Long, pinned: Boolean) {
+        writableDatabase.update(
+            "conversations",
+            ContentValues().apply { put("pinned_at", if (pinned) System.currentTimeMillis() else 0L) },
+            "id=?",
+            arrayOf(id.toString()),
+        )
+    }
+
+    fun deleteConversation(id: Long) {
+        writableDatabase.delete("messages", "conversation_id=?", arrayOf(id.toString()))
+        writableDatabase.delete("conversations", "id=?", arrayOf(id.toString()))
+    }
+
+    fun deleteConversationsForRoleplay(roleplayId: String) {
+        conversations(MODE_ROLEPLAY, roleplayId).forEach { deleteConversation(it.id) }
+    }
+
+    fun setConversationMeta(id: Long, title: String? = null, status: String? = null, profileId: String? = null, model: String? = null) {
+        val values = ContentValues().apply {
+            title?.let { put("title", it.take(120)) }
+            status?.let { put("status", it) }
+            profileId?.let { put("profile_id", it) }
+            model?.let { put("model", it) }
+            put("updated_at", System.currentTimeMillis())
+        }
+        writableDatabase.update("conversations", values, "id=?", arrayOf(id.toString()))
+    }
+
+    fun addMessage(
+        conversationId: Long,
+        role: String,
+        content: String,
+        thinking: String = "",
+        profileId: String = "",
+        model: String = "",
+        toolCallId: String? = null,
+        rawJson: String? = null,
+    ): Long {
+        val now = System.currentTimeMillis()
+        val id = writableDatabase.insert(
+            "messages",
+            null,
+            ContentValues().apply {
+                put("conversation_id", conversationId)
+                put("role", role)
+                put("content", content)
+                put("thinking", thinking)
+                put("profile_id", profileId)
+                put("model", model)
+                put("tool_call_id", toolCallId)
+                put("raw_json", rawJson)
+                put("created_at", now)
+            },
+        )
+        setConversationMeta(conversationId)
+        return id
+    }
+
+    private fun addImportedMessage(
+        conversationId: Long,
+        role: String,
+        content: String,
+        thinking: String = "",
+        profileId: String = "",
+        model: String = "",
+        toolCallId: String? = null,
+        rawJson: String? = null,
+        createdAt: Long,
+    ): Long {
+        return writableDatabase.insert(
+            "messages",
+            null,
+            ContentValues().apply {
+                put("conversation_id", conversationId)
+                put("role", role)
+                put("content", content)
+                put("thinking", thinking)
+                put("profile_id", profileId)
+                put("model", model)
+                put("tool_call_id", toolCallId)
+                put("raw_json", rawJson)
+                put("created_at", createdAt)
+            },
+        )
+    }
+
+    fun updateMessage(id: Long, content: String? = null, thinking: String? = null, rawJson: String? = null) {
+        val values = ContentValues().apply {
+            content?.let { put("content", it) }
+            thinking?.let { put("thinking", it) }
+            rawJson?.let { put("raw_json", it) }
+        }
+        writableDatabase.update("messages", values, "id=?", arrayOf(id.toString()))
+        val conversationId = readableDatabase.query("messages", arrayOf("conversation_id"), "id=?", arrayOf(id.toString()), null, null, null).use {
+            if (it.moveToFirst()) it.getLong(0) else null
+        }
+        conversationId?.let { setConversationMeta(it) }
+    }
+
+    fun messages(conversationId: Long): List<ChatMessage> {
+        val cursor = readableDatabase.query(
+            "messages",
+            arrayOf("id", "conversation_id", "role", "content", "thinking", "profile_id", "model", "tool_call_id", "raw_json", "created_at"),
+            "conversation_id=?",
+            arrayOf(conversationId.toString()),
+            null,
+            null,
+            "id ASC",
+        )
+        return cursor.use {
+            buildList {
+                while (it.moveToNext()) {
+                    add(
+                        ChatMessage(
+                            id = it.getLong(0),
+                            conversationId = it.getLong(1),
+                            role = it.getString(2),
+                            content = it.getString(3),
+                            thinking = it.getString(4),
+                            profileId = it.getString(5),
+                            model = it.getString(6),
+                            toolCallId = if (it.isNull(7)) null else it.getString(7),
+                            rawJson = if (it.isNull(8)) null else it.getString(8),
+                            createdAt = it.getLong(9),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun exportJson(): JSONObject {
+        return JSONObject()
+            .put("schema", "lyra_conversations_backup_v1")
+            .put("conversations", JSONArray().also { array ->
+                conversations().forEach { conversation ->
+                    array.put(
+                        JSONObject()
+                            .put("id", conversation.id)
+                            .put("title", conversation.title)
+                            .put("status", conversation.status)
+                            .put("profileId", conversation.profileId)
+                            .put("model", conversation.model)
+                            .put("createdAt", conversation.createdAt)
+                            .put("updatedAt", conversation.updatedAt)
+                            .put("pinnedAt", conversation.pinnedAt)
+                            .put("mode", conversation.mode)
+                            .put("roleplayId", conversation.roleplayId)
+                            .put("messages", JSONArray().also { messages ->
+                                messages(conversation.id).forEach { message ->
+                                    messages.put(
+                                        JSONObject()
+                                            .put("role", message.role)
+                                            .put("content", message.content)
+                                            .put("thinking", message.thinking)
+                                            .put("profileId", message.profileId)
+                                            .put("model", message.model)
+                                            .put("toolCallId", message.toolCallId)
+                                            .put("rawJson", message.rawJson)
+                                            .put("createdAt", message.createdAt),
+                                    )
+                                }
+                            }),
+                    )
+                }
+            })
+    }
+
+    fun importJson(root: JSONObject, mode: String): String {
+        val array = root.optJSONArray("conversations") ?: return "没有兼容的对话数据"
+        if (mode == "replace") {
+            writableDatabase.delete("messages", null, null)
+            writableDatabase.delete("conversations", null, null)
+        }
+        var importedConversations = 0
+        var importedMessages = 0
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val title = item.optString("title").ifBlank { "导入对话" }
+            val exportedCreatedAt = item.optLong("createdAt", System.currentTimeMillis())
+            val exportedUpdatedAt = item.optLong("updatedAt", exportedCreatedAt)
+            val conversationId = createImportedConversation(
+                profileId = item.optString("profileId"),
+                model = item.optString("model"),
+                title = title,
+                status = item.optString("status").ifBlank { STATUS_IDLE },
+                createdAt = exportedCreatedAt,
+                updatedAt = exportedUpdatedAt,
+                pinnedAt = item.optLong("pinnedAt", 0L),
+                mode = item.optString("mode").ifBlank { MODE_NORMAL },
+                roleplayId = item.optString("roleplayId"),
+            )
+            val messages = item.optJSONArray("messages") ?: JSONArray()
+            for (messageIndex in 0 until messages.length()) {
+                val message = messages.optJSONObject(messageIndex) ?: continue
+                addImportedMessage(
+                    conversationId = conversationId,
+                    role = message.optString("role"),
+                    content = message.optString("content"),
+                    thinking = message.optString("thinking"),
+                    profileId = message.optString("profileId"),
+                    model = message.optString("model"),
+                    toolCallId = message.optString("toolCallId").ifBlank { null },
+                    rawJson = message.optString("rawJson").ifBlank { null },
+                    createdAt = message.optLong("createdAt", exportedCreatedAt + messageIndex),
+                )
+                importedMessages++
+            }
+            importedConversations++
+        }
+        return "对话 ${importedConversations} 个，消息 ${importedMessages} 条"
+    }
+
+    fun openAiMessages(conversationId: Long, excludeMessageId: Long? = null, maxMessages: Int = 40): JSONArray {
+        val source = messages(conversationId).filter { it.id != excludeMessageId }
+        val groups = mutableListOf<List<JSONObject>>()
+        var index = 0
+        while (index < source.size) {
+            val message = source[index]
+            if (message.role == "tool") {
+                index++
+                continue
+            }
+
+            val json = message.toOpenAiJson()
+            if (json.hasToolCalls()) {
+                val requiredToolIds = json.toolCallIds()
+                val toolMessages = mutableListOf<JSONObject>()
+                var next = index + 1
+                while (next < source.size && source[next].role == "tool") {
+                    val tool = source[next]
+                    val toolCallId = tool.toolCallId.orEmpty()
+                    if (toolCallId in requiredToolIds) {
+                        toolMessages.add(tool.toToolJson())
+                    }
+                    next++
+                }
+                val returnedToolIds = toolMessages.map { it.optString("tool_call_id") }.toSet()
+                if (requiredToolIds.isNotEmpty() && returnedToolIds.containsAll(requiredToolIds)) {
+                    groups.add(listOf(json) + toolMessages)
+                }
+                index = next
+            } else {
+                groups.add(listOf(json))
+                index++
+            }
+        }
+        return groups.takeLastMessages(maxMessages)
+    }
+
+    private fun ChatMessage.toOpenAiJson(): JSONObject {
+        val raw = rawJson?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?.also { sanitizeAssistantRaw(it) }
+        return raw ?: JSONObject()
+            .put("role", role)
+            .put("content", if (role == "assistant") cleanGeneratedText(content) else content)
+            .apply {
+                if (role == "assistant" && thinking.isNotBlank()) {
+                    put("reasoning_content", cleanGeneratedText(thinking))
+                }
+            }
+    }
+
+    private fun ChatMessage.toToolJson(): JSONObject = JSONObject()
+        .put("role", "tool")
+        .put("tool_call_id", toolCallId)
+        .put("content", content)
+
+    private fun JSONObject.hasToolCalls(): Boolean {
+        if (optString("role") != "assistant") return false
+        return (optJSONArray("tool_calls")?.length() ?: 0) > 0
+    }
+
+    private fun JSONObject.toolCallIds(): Set<String> {
+        val calls = optJSONArray("tool_calls") ?: return emptySet()
+        return buildSet {
+            for (index in 0 until calls.length()) {
+                calls.optJSONObject(index)?.optString("id").orEmpty().takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+        }
+    }
+
+    private fun List<List<JSONObject>>.takeLastMessages(maxMessages: Int): JSONArray {
+        val selected = ArrayDeque<List<JSONObject>>()
+        var count = 0
+        asReversed().forEach { group ->
+            if (selected.isNotEmpty() && count + group.size > maxMessages) return@forEach
+            selected.addFirst(group)
+            count += group.size
+        }
+        return JSONArray().apply {
+            selected.forEach { group -> group.forEach { put(it) } }
+        }
+    }
+
+    private fun sanitizeAssistantRaw(raw: JSONObject) {
+        if (raw.optString("role") != "assistant") return
+        if (raw.has("content") && !raw.isNull("content")) {
+            raw.put("content", cleanGeneratedText(raw.optString("content")))
+        }
+        if (raw.has("reasoning_content") && !raw.isNull("reasoning_content")) {
+            raw.put("reasoning_content", cleanGeneratedText(raw.optString("reasoning_content")))
+        }
+    }
+
+    private fun cleanGeneratedText(text: String): String {
+        return text.replace(Regex("(?:null){4,}", RegexOption.IGNORE_CASE), "").trim()
+    }
+
+    companion object {
+        const val STATUS_IDLE = "idle"
+        const val STATUS_RUNNING = "running"
+        const val STATUS_INTERRUPTED = "interrupted"
+        const val MODE_NORMAL = "normal"
+        const val MODE_ROLEPLAY = "roleplay"
+    }
+}

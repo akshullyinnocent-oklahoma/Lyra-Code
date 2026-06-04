@@ -1,0 +1,72 @@
+# Gradle / Android build output
+.gradle/
+.kotlin/
+build/
+**/build/
+app/release/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Local SDK and machine-specific files
+local.properties
+*.iml
+.idea/
+!.idea/codeStyles/
+!.idea/codeStyles/**
+
+# Signing keys and release credentials
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+*.cer
+keystore.properties
+signing.properties
+release.properties
+play-account.json
+service-account.json
+
+# Secrets and local environment
+.env
+.env.*
+*.env
+secrets.properties
+apikeys.properties
+credentials.json
+google-services.json
+
+# Logs, crash dumps, profiler traces, test device output
+*.log
+hs_err_pid*
+replay_pid*
+*.hprof
+*.trace
+*.stacktrace
+app/build/outputs/logs/
+app/build/outputs/androidTest-results/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*.tmp
+*.temp
+
+# Local generated caches / downloaded runtime data
+/.cache/
+/cache/
+/caches/
+/logs/
+/tmp/
+/temp/
