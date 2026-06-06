@@ -370,11 +370,27 @@ class ConversationStore(context: Context) : SQLiteOpenHelper(
         }
         var importedConversations = 0
         var importedMessages = 0
+        var skippedConversations = 0
         for (index in 0 until array.length()) {
             val item = array.optJSONObject(index) ?: continue
             val title = item.optString("title").ifBlank { "导入对话" }
             val exportedCreatedAt = item.optLong("createdAt", System.currentTimeMillis())
             val exportedUpdatedAt = item.optLong("updatedAt", exportedCreatedAt)
+            val messages = item.optJSONArray("messages") ?: JSONArray()
+            if (mode != "replace" && importedConversationExists(
+                    title = title,
+                    profileId = item.optString("profileId"),
+                    model = item.optString("model"),
+                    createdAt = exportedCreatedAt,
+                    updatedAt = exportedUpdatedAt,
+                    mode = item.optString("mode").ifBlank { MODE_NORMAL },
+                    roleplayId = item.optString("roleplayId"),
+                    messages = messages,
+                )
+            ) {
+                skippedConversations++
+                continue
+            }
             val conversationId = createImportedConversation(
                 profileId = item.optString("profileId"),
                 model = item.optString("model"),
@@ -386,7 +402,6 @@ class ConversationStore(context: Context) : SQLiteOpenHelper(
                 mode = item.optString("mode").ifBlank { MODE_NORMAL },
                 roleplayId = item.optString("roleplayId"),
             )
-            val messages = item.optJSONArray("messages") ?: JSONArray()
             for (messageIndex in 0 until messages.length()) {
                 val message = messages.optJSONObject(messageIndex) ?: continue
                 addImportedMessage(
@@ -404,7 +419,71 @@ class ConversationStore(context: Context) : SQLiteOpenHelper(
             }
             importedConversations++
         }
-        return "对话 ${importedConversations} 个，消息 ${importedMessages} 条"
+        return buildString {
+            append("对话 ${importedConversations} 个，消息 ${importedMessages} 条")
+            if (skippedConversations > 0) append("，跳过重复对话 ${skippedConversations} 个")
+        }
+    }
+
+    private fun importedConversationExists(
+        title: String,
+        profileId: String,
+        model: String,
+        createdAt: Long,
+        updatedAt: Long,
+        mode: String,
+        roleplayId: String,
+        messages: JSONArray,
+    ): Boolean {
+        val exportedSignature = importedMessagesSignature(messages)
+        return readableDatabase.query(
+            "conversations",
+            arrayOf("id"),
+            "title=? AND profile_id=? AND model=? AND created_at=? AND updated_at=? AND mode=? AND roleplay_id=?",
+            arrayOf(title.take(120), profileId, model, createdAt.toString(), updatedAt.toString(), mode, roleplayId),
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                if (storedMessagesSignature(cursor.getLong(0)) == exportedSignature) return@use true
+            }
+            false
+        }
+    }
+
+    private fun importedMessagesSignature(messages: JSONArray): String {
+        return buildString {
+            append(messages.length()).append('|')
+            for (index in 0 until messages.length()) {
+                val message = messages.optJSONObject(index) ?: continue
+                append(message.optString("role")).append('\u001F')
+                append(message.optString("content")).append('\u001F')
+                append(message.optString("thinking")).append('\u001F')
+                append(message.optString("profileId")).append('\u001F')
+                append(message.optString("model")).append('\u001F')
+                append(message.optString("toolCallId")).append('\u001F')
+                append(message.optString("rawJson")).append('\u001F')
+                append(message.optLong("createdAt")).append('\u001E')
+            }
+        }
+    }
+
+    private fun storedMessagesSignature(conversationId: Long): String {
+        return buildString {
+            val rows = messages(conversationId)
+            append(rows.size).append('|')
+            rows.forEach { message ->
+                append(message.role).append('\u001F')
+                append(message.content).append('\u001F')
+                append(message.thinking).append('\u001F')
+                append(message.profileId).append('\u001F')
+                append(message.model).append('\u001F')
+                append(message.toolCallId.orEmpty()).append('\u001F')
+                append(message.rawJson.orEmpty()).append('\u001F')
+                append(message.createdAt).append('\u001E')
+            }
+        }
     }
 
     fun openAiMessages(conversationId: Long, excludeMessageId: Long? = null, maxMessages: Int = 40): JSONArray {

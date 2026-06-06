@@ -6,10 +6,13 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 data class ApiProfile(
@@ -114,6 +117,10 @@ class AppSettings(context: Context) {
     private val appContext = context.applicationContext
     private val plainPrefs = appContext.getSharedPreferences("lyra_settings", Context.MODE_PRIVATE)
     private val securePrefs = createSecurePrefs()
+    private val skillImportClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
 
     var workspaceUri: String?
         get() = plainPrefs.getString(KEY_WORKSPACE_URI, null)
@@ -410,22 +417,74 @@ class AppSettings(context: Context) {
                     .ifBlank { id }
                 val description = File(dir, SKILL_DESCRIPTION_FILE).takeIf { it.exists() }?.readText()?.trim().orEmpty()
                     .ifBlank { meta.second }
-                val fileCount = dir.walkTopDown().count { it.isFile && it.name != SKILL_NAME_FILE }
+                val fileCount = dir.walkTopDown().count { it.isFile && it.name !in setOf(SKILL_NAME_FILE, SKILL_DESCRIPTION_FILE) }
                 SkillPack(id, name, description, enabled = id in enabledIds, fileCount = fileCount)
             }
             ?.sortedBy { it.name.lowercase() }
             .orEmpty()
     }
 
-    fun importSkillZip(uri: Uri): Result<SkillPack> = runCatching {
-        val sourceName = displayName(uri).removeSuffix(".zip").ifBlank { "Skill" }
+    fun importSkillFile(uri: Uri): Result<SkillPack> = runCatching {
+        val sourceName = displayName(uri).ifBlank { "Skill" }
         val bytes = appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: error("无法读取 Skills 压缩包")
-        installSkillZip(sourceName, bytes)
+            ?: error("无法读取 Skills 文件")
+        if (sourceName.endsWith(".zip", ignoreCase = true) || bytes.isZipBytes()) {
+            installSkillZip(sourceName.removeSuffix(".zip").ifBlank { "Skill" }, bytes)
+        } else {
+            installSkillMarkdown(sourceName, String(bytes, Charsets.UTF_8))
+        }
+    }
+
+    fun importSkillZip(uri: Uri): Result<SkillPack> = importSkillFile(uri)
+
+    fun importSkillMarkdown(sourceName: String, skillText: String): Result<SkillPack> = runCatching {
+        installSkillMarkdown(sourceName.ifBlank { "SKILL.md" }, skillText)
+    }
+
+    fun importSkillRepository(repositoryUrl: String): Result<SkillPack> = runCatching {
+        val candidates = skillRepositoryCandidates(repositoryUrl.trim())
+        require(candidates.isNotEmpty()) { "无法识别仓库链接，请输入 GitHub、Gitee、GitLab 仓库链接、zip 链接或 SKILL.md 原始链接" }
+        var lastError: Throwable? = null
+        for (candidate in candidates) {
+            val result = runCatching {
+                val bytes = downloadSkillBytes(candidate.url)
+                if (candidate.isZip) {
+                    installSkillZip(candidate.sourceName, bytes)
+                } else {
+                    installSkillMarkdown(candidate.sourceName, String(bytes, Charsets.UTF_8))
+                }
+            }
+            result.onSuccess { return@runCatching it }
+            result.onFailure { lastError = it }
+        }
+        throw lastError ?: IllegalArgumentException("导入仓库失败")
     }
 
     fun importSkillZipBytes(sourceName: String, bytes: ByteArray): Result<SkillPack> = runCatching {
         installSkillZip(sourceName.removeSuffix(".zip").ifBlank { "Skill" }, bytes)
+    }
+
+    private fun installSkillMarkdown(sourceName: String, skillText: String): SkillPack {
+        val text = skillText.trim()
+        require(text.isNotBlank()) { "SKILL.md 内容不能为空" }
+        val id = newId()
+        val tempDir = File(skillsRoot(), "$id.tmp").also { it.mkdirs() }
+        runCatching {
+            File(tempDir, "SKILL.md").writeText(text)
+            val meta = parseSkillMeta(text)
+            val name = meta.first.ifBlank { sourceName.removeSuffix(".md").ifBlank { "Skill" } }
+            File(tempDir, SKILL_NAME_FILE).writeText(name)
+            File(tempDir, SKILL_DESCRIPTION_FILE).writeText(meta.second)
+            val finalDir = File(skillsRoot(), id)
+            if (finalDir.exists()) finalDir.deleteRecursively()
+            require(tempDir.renameTo(finalDir)) { "保存 Skill 失败" }
+            setSkillEnabled(id, true)
+            return SkillPack(id, name, meta.second, enabled = true, fileCount = 1)
+        }.onFailure {
+            tempDir.deleteRecursively()
+            throw it
+        }
+        error("保存 Skill 失败")
     }
 
     private fun installSkillZip(sourceName: String, bytes: ByteArray): SkillPack {
@@ -442,7 +501,6 @@ class AppSettings(context: Context) {
                         val safePath = safeZipPath(entry.name)
                         if (!entry.isDirectory && safePath != null) {
                             val bytes = zip.readBytes()
-                            require(bytes.size <= MAX_SKILL_FILE_BYTES) { "Skills 包内单个文件超过 ${MAX_SKILL_FILE_BYTES / 1024}KB: $safePath" }
                             totalBytes += bytes.size
                             require(totalBytes <= MAX_SKILL_TOTAL_BYTES) { "Skills 包总大小超过 ${MAX_SKILL_TOTAL_BYTES / 1024 / 1024}MB" }
                             val output = File(tempDir, safePath)
@@ -466,6 +524,7 @@ class AppSettings(context: Context) {
         val meta = parseSkillMeta(File(tempDir, skillFileRelativePath).readText())
         val name = meta.first.ifBlank { sourceName }
         File(tempDir, SKILL_NAME_FILE).writeText(name)
+        File(tempDir, SKILL_DESCRIPTION_FILE).writeText(meta.second)
         val finalDir = File(skillsRoot(), id)
         if (finalDir.exists()) finalDir.deleteRecursively()
         tempDir.renameTo(finalDir)
@@ -506,7 +565,7 @@ class AppSettings(context: Context) {
     fun listSkillFiles(id: String): Result<String> = runCatching {
         val root = skillDir(id)
         root.walkTopDown()
-            .filter { it.isFile && it.name != SKILL_NAME_FILE }
+            .filter { it.isFile && it.name !in setOf(SKILL_NAME_FILE, SKILL_DESCRIPTION_FILE) }
             .map { it.relativeTo(root).invariantSeparatorsPath }
             .sorted()
             .joinToString("\n")
@@ -1353,7 +1412,6 @@ class AppSettings(context: Context) {
         private const val SKILL_DESCRIPTION_FILE = "_description.txt"
         private const val ROLEPLAY_META_FILE = "_meta.json"
         private const val ROLEPLAY_STICKERS_FILE = "_stickers.json"
-        private const val MAX_SKILL_FILE_BYTES = 512 * 1024
         private const val MAX_SKILL_READ_BYTES = 256 * 1024
         private const val MAX_SKILL_TOTAL_BYTES = 8 * 1024 * 1024
         private const val MAX_ROLEPLAY_FILE_BYTES = 1024 * 1024
@@ -1510,6 +1568,154 @@ class AppSettings(context: Context) {
         return parts.joinToString("/") { part ->
             part.replace(Regex("""[^A-Za-z0-9._ -]"""), "_").take(96).ifBlank { "_" }
         }
+    }
+
+    private data class SkillImportCandidate(
+        val url: String,
+        val sourceName: String,
+        val isZip: Boolean,
+    )
+
+    private fun skillRepositoryCandidates(rawUrl: String): List<SkillImportCandidate> {
+        if (rawUrl.isBlank()) return emptyList()
+        val directSource = rawUrl.substringBefore('?').substringAfterLast('/').ifBlank { "Skill" }
+        if (rawUrl.substringBefore('?').endsWith(".zip", ignoreCase = true)) {
+            return listOf(SkillImportCandidate(rawUrl, directSource.removeSuffix(".zip"), isZip = true))
+        }
+        val uri = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return emptyList()
+        val host = uri.host.orEmpty().lowercase()
+        val segments = uri.pathSegments.orEmpty().filter { it.isNotBlank() }
+        fun cleanRepo(value: String) = value.removeSuffix(".git")
+        fun markerIndex(vararg markers: String): Int {
+            return segments.indexOfFirst { item -> markers.any { item == it } }
+        }
+        fun branchAfter(vararg markers: String): String? {
+            val index = markerIndex(*markers)
+            return if (index >= 0) segments.getOrNull(index + 1) else null
+        }
+        fun orderedBranches(explicit: String?, default: String?): List<String> {
+            return listOfNotNull(explicit, default, "main", "master").distinct()
+        }
+        fun githubDefaultBranch(owner: String, repo: String): String? {
+            return runCatching {
+                val request = Request.Builder()
+                    .url("https://api.github.com/repos/$owner/$repo")
+                    .header("User-Agent", "Lyra-Code")
+                    .get()
+                    .build()
+                skillImportClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@runCatching null
+                    JSONObject(response.body?.string().orEmpty()).optString("default_branch").ifBlank { null }
+                }
+            }.getOrNull()
+        }
+        fun giteeDefaultBranch(owner: String, repo: String): String? {
+            return runCatching {
+                val request = Request.Builder()
+                    .url("https://gitee.com/api/v5/repos/$owner/$repo")
+                    .header("User-Agent", "Lyra-Code")
+                    .get()
+                    .build()
+                skillImportClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@runCatching null
+                    JSONObject(response.body?.string().orEmpty()).optString("default_branch").ifBlank { null }
+                }
+            }.getOrNull()
+        }
+        fun gitlabDefaultBranch(path: String): String? {
+            return runCatching {
+                val encoded = path.replace("/", "%2F")
+                val request = Request.Builder()
+                    .url("https://gitlab.com/api/v4/projects/$encoded")
+                    .header("User-Agent", "Lyra-Code")
+                    .get()
+                    .build()
+                skillImportClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@runCatching null
+                    JSONObject(response.body?.string().orEmpty()).optString("default_branch").ifBlank { null }
+                }
+            }.getOrNull()
+        }
+        fun explicitFilePath(vararg markers: String): String {
+            val index = markerIndex(*markers)
+            return if (index >= 0) segments.drop(index + 2).joinToString("/") else ""
+        }
+        if (host == "raw.githubusercontent.com" && segments.size >= 4 && rawUrl.substringBefore('?').endsWith("SKILL.md", ignoreCase = true)) {
+            return listOf(SkillImportCandidate(rawUrl, "SKILL.md", isZip = false))
+        }
+        if (rawUrl.substringBefore('?').endsWith("SKILL.md", ignoreCase = true) && host !in setOf("github.com", "gitee.com", "gitlab.com")) {
+            return listOf(SkillImportCandidate(rawUrl, "SKILL.md", isZip = false))
+        }
+        fun githubCandidates(): List<SkillImportCandidate> {
+            if (segments.size < 2) return emptyList()
+            val owner = segments[0]
+            val repo = cleanRepo(segments[1])
+            val branches = orderedBranches(branchAfter("tree", "blob"), githubDefaultBranch(owner, repo))
+            val filePath = explicitFilePath("blob")
+            if (filePath.endsWith("SKILL.md", ignoreCase = true)) {
+                return branches.map { branch ->
+                    SkillImportCandidate("https://raw.githubusercontent.com/$owner/$repo/$branch/$filePath", "SKILL.md", isZip = false)
+                }
+            }
+            return branches.map { branch ->
+                SkillImportCandidate("https://github.com/$owner/$repo/archive/refs/heads/$branch.zip", repo, isZip = true)
+            }
+        }
+        fun giteeCandidates(): List<SkillImportCandidate> {
+            if (segments.size < 2) return emptyList()
+            val owner = segments[0]
+            val repo = cleanRepo(segments[1])
+            val branches = orderedBranches(branchAfter("tree", "blob"), giteeDefaultBranch(owner, repo))
+            val filePath = explicitFilePath("blob")
+            if (filePath.endsWith("SKILL.md", ignoreCase = true)) {
+                return branches.map { branch ->
+                    SkillImportCandidate("https://gitee.com/$owner/$repo/raw/$branch/$filePath", "SKILL.md", isZip = false)
+                }
+            }
+            return branches.map { branch ->
+                SkillImportCandidate("https://gitee.com/$owner/$repo/repository/archive/$branch.zip", repo, isZip = true)
+            }
+        }
+        fun gitlabCandidates(): List<SkillImportCandidate> {
+            val dashIndex = segments.indexOf("-")
+            val repoSegments = if (dashIndex >= 0) segments.take(dashIndex) else segments
+            if (repoSegments.size < 2) return emptyList()
+            val repo = cleanRepo(repoSegments.last())
+            val path = repoSegments.joinToString("/")
+            val branch = if (dashIndex >= 0 && segments.getOrNull(dashIndex + 1) in setOf("tree", "blob")) segments.getOrNull(dashIndex + 2) else null
+            val subPath = if (dashIndex >= 0) segments.drop(dashIndex + 3).joinToString("/") else ""
+            val branches = orderedBranches(branch, gitlabDefaultBranch(path))
+            if (dashIndex >= 0 && segments.getOrNull(dashIndex + 1) == "blob" && subPath.endsWith("SKILL.md", ignoreCase = true)) {
+                return branches.map { item ->
+                    SkillImportCandidate("https://gitlab.com/$path/-/raw/$item/$subPath", "SKILL.md", isZip = false)
+                }
+            }
+            return branches.map { item ->
+                SkillImportCandidate("https://gitlab.com/$path/-/archive/$item/$repo-$item.zip", repo, isZip = true)
+            }
+        }
+        return when {
+            host == "github.com" -> githubCandidates()
+            host == "gitee.com" -> giteeCandidates()
+            host == "gitlab.com" || host.endsWith(".gitlab.com") -> gitlabCandidates()
+            else -> emptyList()
+        }
+    }
+
+    private fun downloadSkillBytes(url: String): ByteArray {
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Lyra-Code")
+            .get()
+            .build()
+        skillImportClient.newCall(request).execute().use { response ->
+            require(response.isSuccessful) { "下载失败 ${response.code}: $url" }
+            return response.body?.bytes() ?: error("下载内容为空")
+        }
+    }
+
+    private fun ByteArray.isZipBytes(): Boolean {
+        return size >= 2 && this[0] == 0x50.toByte() && this[1] == 0x4B.toByte()
     }
 
     private fun findSkillFile(dir: File): File? {

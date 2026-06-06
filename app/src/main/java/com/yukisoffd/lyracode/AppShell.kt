@@ -273,15 +273,18 @@ internal fun LyraCodeApp(
             workspaceName = workspaceManager.displayName()
         }
     }
-    val skillZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+    fun updateSkillImportStatus(result: Result<SkillPack>) {
+        result.fold(
+            onSuccess = {
+                skillStatus = "已导入 ${it.name}"
+                skillsRevision++
+            },
+            onFailure = { skillStatus = it.message.orEmpty().ifBlank { "导入失败" } },
+        )
+    }
+    val skillFileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
-            settings.importSkillZip(uri).fold(
-                onSuccess = {
-                    skillStatus = "已导入 ${it.name}"
-                    skillsRevision++
-                },
-                onFailure = { skillStatus = it.message.orEmpty() },
-            )
+            updateSkillImportStatus(settings.importSkillFile(uri))
         }
     }
     val backupZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -468,7 +471,17 @@ internal fun LyraCodeApp(
                             onFontScaleModeChange = onFontScaleModeChange,
                             onCustomFontScaleChange = onCustomFontScaleChange,
                             onPickWorkspace = { treeLauncher.launch(null) },
-                            onImportSkill = { skillZipLauncher.launch("*/*") },
+                            onImportSkillFile = { skillFileLauncher.launch("*/*") },
+                            onImportSkillRepository = { url ->
+                                skillStatus = "正在下载 Skills 仓库..."
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) { settings.importSkillRepository(url) }
+                                    updateSkillImportStatus(result)
+                                }
+                            },
+                            onImportSkillMarkdown = { text ->
+                                updateSkillImportStatus(settings.importSkillMarkdown("manual_SKILL.md", text))
+                            },
                             onImportBackup = { mode ->
                                 backupImportMode = mode
                                 backupZipLauncher.launch("application/zip")
@@ -869,11 +882,16 @@ internal fun SkillDrawerRow(skill: SkillPack, onToggle: () -> Unit, onDelete: ()
 internal fun SkillsScreen(
     skills: List<SkillPack>,
     status: String,
-    onImportSkill: () -> Unit,
+    onImportSkillFile: () -> Unit,
+    onImportSkillRepository: (String) -> Unit,
+    onImportSkillMarkdown: (String) -> Unit,
     onToggleSkill: (String, Boolean) -> Unit,
     onDeleteSkill: (String) -> Unit,
 ) {
     var deleteTarget by remember { mutableStateOf<SkillPack?>(null) }
+    var importModeVisible by remember { mutableStateOf(false) }
+    var manualImportVisible by remember { mutableStateOf(false) }
+    var repositoryImportVisible by remember { mutableStateOf(false) }
     deleteTarget?.let { skill ->
         ConfirmDeleteDialog(
             title = "删除 Skill",
@@ -881,6 +899,41 @@ internal fun SkillsScreen(
             targetName = skill.name,
             onDismiss = { deleteTarget = null },
             onConfirm = { onDeleteSkill(skill.id) },
+        )
+    }
+    if (importModeVisible) {
+        SkillImportModeDialog(
+            onDismiss = { importModeVisible = false },
+            onImportFile = {
+                importModeVisible = false
+                onImportSkillFile()
+            },
+            onImportRepository = {
+                importModeVisible = false
+                repositoryImportVisible = true
+            },
+            onImportMarkdown = {
+                importModeVisible = false
+                manualImportVisible = true
+            },
+        )
+    }
+    if (manualImportVisible) {
+        SkillManualImportDialog(
+            onDismiss = { manualImportVisible = false },
+            onImportMarkdown = { text ->
+                manualImportVisible = false
+                onImportSkillMarkdown(text)
+            },
+        )
+    }
+    if (repositoryImportVisible) {
+        SkillRepositoryImportDialog(
+            onDismiss = { repositoryImportVisible = false },
+            onImportRepository = { url ->
+                repositoryImportVisible = false
+                onImportSkillRepository(url)
+            },
         )
     }
     Column(
@@ -893,7 +946,7 @@ internal fun SkillsScreen(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Skills 能力包", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        "导入包含 SKILL.md 的 zip。AI 会先查看 name/description 判断是否需要，再按需读取包内文件。",
+                        "支持从文件、仓库链接或手动编辑 SKILL.md 导入。AI 会先查看 name/description 判断是否需要，再按需读取包内文件。",
                         color = KimiMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -904,7 +957,7 @@ internal fun SkillsScreen(
                 icon = Icons.Default.UploadFile,
                 title = "导入 Skills",
                 value = "${skills.size} 个已安装",
-                onClick = onImportSkill,
+                onClick = { importModeVisible = true },
             )
         }
         if (status.isNotBlank()) {
@@ -913,14 +966,14 @@ internal fun SkillsScreen(
         if (skills.isEmpty()) {
             KimiCardBox {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Default.Extension, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("暂无 Skills", style = MaterialTheme.typography.titleMedium)
-                        Text("导入 zip 后会在这里显示，可启用、禁用或删除。", color = KimiMuted)
+                        Icon(Icons.Default.Extension, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("暂无 Skills", style = MaterialTheme.typography.titleMedium)
+                            Text("导入 zip、单个 SKILL.md 或仓库后会在这里显示，可启用、禁用或删除。", color = KimiMuted)
+                        }
                     }
                 }
-            }
-        } else {
+            } else {
             KimiSectionLabel("已安装")
         }
         if (skills.isNotEmpty()) {
@@ -939,6 +992,207 @@ internal fun SkillsScreen(
 }
 
 @Composable
+internal fun SkillImportModeDialog(
+    onDismiss: () -> Unit,
+    onImportFile: () -> Unit,
+    onImportRepository: () -> Unit,
+    onImportMarkdown: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.9f),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(
+                modifier = Modifier.padding(vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                SkillImportModeRow(
+                    icon = Icons.Default.UploadFile,
+                    title = "从文件导入",
+                    subtitle = "选择 zip 或单个 SKILL.md",
+                    onClick = onImportFile,
+                )
+                KimiDivider()
+                SkillImportModeRow(
+                    icon = Icons.Default.CloudDownload,
+                    title = "从仓库导入",
+                    subtitle = "GitHub / Gitee / GitLab",
+                    onClick = onImportRepository,
+                )
+                KimiDivider()
+                SkillImportModeRow(
+                    icon = Icons.Default.Add,
+                    title = "手动添加",
+                    subtitle = "直接编辑 SKILL.md",
+                    onClick = onImportMarkdown,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SkillImportModeRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = KimiMuted)
+    }
+}
+
+@Composable
+internal fun SkillRepositoryImportDialog(
+    onDismiss: () -> Unit,
+    onImportRepository: (String) -> Unit,
+) {
+    var repoUrl by rememberSaveable { mutableStateOf("") }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .heightIn(max = 620.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text("从仓库导入", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "输入 GitHub、Gitee 或 GitLab 仓库链接，Lyra Code 会自动下载仓库文件并识别 SKILL.md。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = repoUrl,
+                    onValueChange = { repoUrl = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("GitHub / Gitee / GitLab 链接") },
+                    placeholder = { Text("https://github.com/owner/repo") },
+                    singleLine = true,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { onImportRepository(repoUrl.trim()) },
+                        enabled = repoUrl.trim().isNotBlank(),
+                        shape = KimiPillShape,
+                    ) {
+                        Icon(Icons.Default.CloudDownload, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("导入")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SkillManualImportDialog(
+    onDismiss: () -> Unit,
+    onImportMarkdown: (String) -> Unit,
+) {
+    var manualText by rememberSaveable {
+        mutableStateOf(
+            """
+            ---
+            name: 自定义 Skill
+            description: 简要说明这个 Skill 的用途
+            ---
+
+            # 自定义 Skill
+
+            在这里写给 AI 的能力说明、适用场景、使用步骤和约束。
+            """.trimIndent(),
+        )
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .heightIn(max = 620.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text("手动添加", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "直接编辑 SKILL.md 内容，保存后会作为一个独立 Skill 安装。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = manualText,
+                    onValueChange = { manualText = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 180.dp),
+                    label = { Text("SKILL.md") },
+                    minLines = 8,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { onImportMarkdown(manualText) },
+                        enabled = manualText.isNotBlank(),
+                        shape = KimiPillShape,
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("保存 Skill")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 internal fun SkillSettingsRow(skill: SkillPack, onToggle: () -> Unit, onDelete: () -> Unit) {
     Row(
         Modifier
@@ -950,7 +1204,7 @@ internal fun SkillSettingsRow(skill: SkillPack, onToggle: () -> Unit, onDelete: 
         Icon(
             Icons.Default.Extension,
             contentDescription = null,
-            tint = if (skill.enabled) MaterialTheme.colorScheme.onSurface else KimiMuted,
+            tint = if (skill.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(26.dp),
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -958,7 +1212,7 @@ internal fun SkillSettingsRow(skill: SkillPack, onToggle: () -> Unit, onDelete: 
                 Text(skill.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     if (skill.enabled) "已启用" else "已禁用",
-                    color = if (skill.enabled) KimiBlue else KimiMuted,
+                    color = if (skill.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall,
                 )
             }

@@ -38,6 +38,7 @@ data class UpdateDownloadProgress(
 
 class UpdateManager(private val context: Context) {
     private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("lyra_update_state", Context.MODE_PRIVATE)
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -133,23 +134,64 @@ class UpdateManager(private val context: Context) {
                 partial.delete()
                 "保存安装包失败"
             }
+            savePendingApk(output, info)
             onProgress(UpdateDownloadProgress(total.coerceAtLeast(output.length()), total, "下载完成"))
             output
         }
     }
 
-    fun installOrRequestPermission(apkFile: File): Intent {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !appContext.packageManager.canRequestPackageInstalls()) {
-            return Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${appContext.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun pendingDownloadedApk(): File? {
+        val path = prefs.getString(KEY_PENDING_APK_PATH, null).orEmpty()
+        if (path.isBlank()) return null
+        val file = File(path)
+        if (!file.exists() || file.length() <= 0L || !isZipApk(file)) {
+            clearPendingApk()
+            return null
         }
+        val expected = prefs.getString(KEY_PENDING_APK_SHA256, "").orEmpty()
+        if (expected.isNotBlank()) {
+            val valid = runCatching { sha256(file).equals(expected, ignoreCase = true) }.getOrDefault(false)
+            if (!valid) {
+                clearPendingApk()
+                return null
+            }
+        }
+        return file
+    }
+
+    fun pendingDownloadedApkLabel(): String {
+        val version = prefs.getString(KEY_PENDING_VERSION_NAME, "").orEmpty()
+        return if (version.isNotBlank()) "继续安装 $version" else "继续安装已下载更新"
+    }
+
+    fun clearPendingApk() {
+        prefs.edit().clear().apply()
+    }
+
+    fun needsInstallPermission(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !appContext.packageManager.canRequestPackageInstalls()
+    }
+
+    fun installPermissionIntent(): Intent {
+        return Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:${appContext.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    fun installIntent(apkFile: File): Intent {
         val uri = FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", apkFile)
         return Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    fun installOrRequestPermission(apkFile: File): Intent {
+        if (needsInstallPermission()) {
+            return installPermissionIntent()
+        }
+        return installIntent(apkFile)
     }
 
     private fun parseUpdateInfo(json: JSONObject): AppUpdateInfo {
@@ -217,5 +259,21 @@ class UpdateManager(private val context: Context) {
         val bytes = ByteArray(count)
         val read = file.inputStream().use { it.read(bytes) }.coerceAtLeast(0)
         return bytes.take(read).joinToString(" ") { "%02x".format(it) }
+    }
+
+    private fun savePendingApk(file: File, info: AppUpdateInfo) {
+        prefs.edit()
+            .putString(KEY_PENDING_APK_PATH, file.absolutePath)
+            .putString(KEY_PENDING_APK_SHA256, normalizeSha256(info.apkSha256).orEmpty())
+            .putString(KEY_PENDING_VERSION_NAME, info.versionName)
+            .putLong(KEY_PENDING_VERSION_CODE, info.versionCode)
+            .apply()
+    }
+
+    private companion object {
+        const val KEY_PENDING_APK_PATH = "pending_apk_path"
+        const val KEY_PENDING_APK_SHA256 = "pending_apk_sha256"
+        const val KEY_PENDING_VERSION_NAME = "pending_version_name"
+        const val KEY_PENDING_VERSION_CODE = "pending_version_code"
     }
 }

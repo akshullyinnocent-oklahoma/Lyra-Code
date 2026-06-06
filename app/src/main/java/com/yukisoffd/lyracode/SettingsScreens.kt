@@ -241,7 +241,9 @@ internal fun SettingsScreen(
     onFontScaleModeChange: (String) -> Unit,
     onCustomFontScaleChange: (Float) -> Unit,
     onPickWorkspace: () -> Unit,
-    onImportSkill: () -> Unit,
+    onImportSkillFile: () -> Unit,
+    onImportSkillRepository: (String) -> Unit,
+    onImportSkillMarkdown: (String) -> Unit,
     onImportBackup: (String) -> Unit,
     onBackupStatusChange: (String) -> Unit,
     settingsBackRequest: Int,
@@ -311,7 +313,9 @@ internal fun SettingsScreen(
                     "skills" -> SkillsScreen(
                         skills = skills,
                         status = skillStatus,
-                        onImportSkill = onImportSkill,
+                        onImportSkillFile = onImportSkillFile,
+                        onImportSkillRepository = onImportSkillRepository,
+                        onImportSkillMarkdown = onImportSkillMarkdown,
                         onToggleSkill = onToggleSkill,
                         onDeleteSkill = onDeleteSkill,
                     )
@@ -1028,7 +1032,12 @@ internal fun ThemeSettings(
     }
     KimiCardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.width(36.dp).size(24.dp))
+            Icon(
+                Icons.Default.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.width(36.dp).size(24.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
             Text("Material You 动态配色", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
             Switch(checked = dynamicColorEnabled, onCheckedChange = onDynamicColorChange)
         }
@@ -1047,9 +1056,16 @@ internal fun ThemeOptionRow(title: String, value: String, selected: String, onSe
             .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Default.Palette, contentDescription = null, modifier = Modifier.width(36.dp).size(24.dp))
+        Icon(
+            Icons.Default.Palette,
+            contentDescription = null,
+            modifier = Modifier.width(36.dp).size(24.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
         Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-        if (value == selected) Icon(Icons.Default.Check, contentDescription = "已选择")
+        if (value == selected) {
+            Icon(Icons.Default.Check, contentDescription = "已选择", tint = MaterialTheme.colorScheme.primary)
+        }
     }
 }
 
@@ -2481,11 +2497,7 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
 internal fun TermuxSetupGuide() {
     val clipboard = LocalClipboardManager.current
     val setupCommand = remember {
-        """
-        mkdir -p ~/.termux
-        grep -qxF 'allow-external-apps=true' ~/.termux/termux.properties || echo 'allow-external-apps=true' >> ~/.termux/termux.properties
-        termux-reload-settings
-        """.trimIndent()
+        "mkdir -p ~/.termux && (grep -qxF 'allow-external-apps=true' ~/.termux/termux.properties || echo 'allow-external-apps=true' >> ~/.termux/termux.properties) && termux-reload-settings"
     }
     val testCommand = remember { "python --version && pwd" }
     KimiCardBox {
@@ -2562,30 +2574,70 @@ internal data class LicenseNotice(
     val name: String,
     val license: String,
     val note: String,
+    val licenseText: String,
 )
 
 @Composable
 internal fun OpenSourceLicensesScreen() {
+    var selectedNotice by remember { mutableStateOf<LicenseNotice?>(null) }
     val notices = remember {
         listOf(
-            LicenseNotice("AndroidX Core KTX", "Apache License 2.0", "Android Kotlin 扩展与兼容层。"),
-            LicenseNotice("AndroidX AppCompat", "Apache License 2.0", "兼容层组件。"),
-            LicenseNotice("AndroidX Activity Compose", "Apache License 2.0", "Compose Activity 集成。"),
-            LicenseNotice("Jetpack Compose UI", "Apache License 2.0", "声明式 UI 框架。"),
-            LicenseNotice("Jetpack Compose Material 3", "Apache License 2.0", "Material Design 3 组件。"),
-            LicenseNotice("Jetpack Compose Material Icons Extended", "Apache License 2.0", "界面图标库。"),
-            LicenseNotice("AndroidX DocumentFile", "Apache License 2.0", "SAF 工作区文件访问。"),
-            LicenseNotice("AndroidX Security Crypto", "Apache License 2.0", "本地敏感配置加密存储。"),
-            LicenseNotice("Google Material Components", "Apache License 2.0", "Material 组件兼容依赖。"),
-            LicenseNotice("Kotlinx Coroutines", "Apache License 2.0", "异步任务与流式请求。"),
-            LicenseNotice("OkHttp", "Apache License 2.0", "HTTP、SSE 兼容读取与 MCP Streamable HTTP 通信。"),
-            LicenseNotice("JetBrains Markdown / RikkaHub Markdown fork", "Apache License 2.0", "Markdown GFM AST 解析，支持表格、列表和数学节点。"),
-            LicenseNotice("JLatexMath Android / Soffd fork", "GNU General Public License v2.0", "本地 LaTeX 数学公式渲染。源码随工程 third_party/jlatexmath 保留。"),
-            LicenseNotice("JSON-java / org.json", "Public Domain", "JSON 解析与序列化。"),
-            LicenseNotice("JUnit", "Eclipse Public License 1.0", "单元测试框架，仅测试构建使用。"),
-            LicenseNotice("Android Gradle Plugin", "Apache License 2.0", "Android 构建工具链。"),
-            LicenseNotice("Kotlin", "Apache License 2.0", "主要开发语言与编译器。"),
+            LicenseNotice("AndroidX Core KTX", "Apache License 2.0", "Android Kotlin 扩展与兼容层。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("AndroidX Activity Compose", "Apache License 2.0", "Compose Activity 集成。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("Jetpack Compose UI", "Apache License 2.0", "声明式 UI 框架。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("Jetpack Compose Material 3", "Apache License 2.0", "Material Design 3 组件。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("Jetpack Compose Material Icons Extended", "Apache License 2.0", "界面图标库。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("AndroidX DocumentFile", "Apache License 2.0", "SAF 工作区文件访问。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("AndroidX Security Crypto", "Apache License 2.0", "本地敏感配置加密存储。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("Kotlinx Coroutines", "Apache License 2.0", "异步任务与流式请求。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("OkHttp", "Apache License 2.0", "HTTP、SSE 兼容读取与 MCP Streamable HTTP 通信。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("JetBrains Markdown / RikkaHub Markdown fork", "Apache License 2.0", "Markdown GFM AST 解析，支持表格、列表和数学节点。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("Android Gradle Plugin", "Apache License 2.0", "Android 构建工具链。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("Kotlin", "Apache License 2.0", "主要开发语言与编译器。", LicenseTexts.APACHE_2_0),
+            LicenseNotice("JSch / mwiede fork", "BSD 3-Clause License", "SSH 连接与远程命令执行。", LicenseTexts.BSD_3_CLAUSE),
+            LicenseNotice("JLatexMath Android / Soffd fork", "GNU General Public License v2.0 with linking exception", "本地 LaTeX 数学公式渲染。源码随工程 third_party/jlatexmath 保留。", LicenseTexts.JLATEXMATH_GPL_2_WITH_EXCEPTION),
+            LicenseNotice("JLatexMath fonts", "OFL / Knuth / Public Domain / GPL v2", "数学公式渲染字体。完整字体许可随 third_party/jlatexmath/assets 分发。", LicenseTexts.JLATEXMATH_FONT_LICENSES),
+            LicenseNotice("JSON-java / org.json", "JSON License", "JSON 解析与序列化。", LicenseTexts.JSON_LICENSE),
+            LicenseNotice("JUnit", "Eclipse Public License 1.0", "单元测试框架，仅测试构建使用。", LicenseTexts.EPL_1_0),
+            LicenseNotice("Simple Icons", "CC0 1.0 Universal", "关于页面仓库与社交群聊 SVG 图标。", LicenseTexts.CC0_1_0),
         )
+    }
+    selectedNotice?.let { notice ->
+        Dialog(
+            onDismissRequest = { selectedNotice = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(18.dp),
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+            ) {
+                Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(notice.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(notice.license, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                        }
+                        IconButton(onClick = { selectedNotice = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "关闭")
+                        }
+                    }
+                    KimiDivider()
+                    SelectionContainer {
+                        Text(
+                            notice.licenseText,
+                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+            }
+        }
     }
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -2595,18 +2647,24 @@ internal fun OpenSourceLicensesScreen() {
             KimiCardBox {
                 Text("开源许可证", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Lyra Code 使用以下开源组件。完整许可证文本以各项目官方仓库和发布包为准。",
+                    "Lyra Code 使用以下开源组件。点击条目可查看内置的原始许可证文本。",
                     color = KimiMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
         }
         items(notices) { notice ->
-            KimiCardBox {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(notice.name, style = MaterialTheme.typography.titleSmall)
-                    Text(notice.license, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    Text(notice.note, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+            KimiCardBox(
+                modifier = Modifier.clickable { selectedNotice = notice },
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Default.Description, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(notice.name, style = MaterialTheme.typography.titleSmall)
+                        Text(notice.license, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(notice.note, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = KimiMuted)
                 }
             }
         }
@@ -2641,6 +2699,27 @@ internal fun AboutSoftwareScreen() {
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var downloadProgress by remember { mutableStateOf<UpdateDownloadProgress?>(null) }
     var downloading by remember { mutableStateOf(false) }
+    var pendingApk by remember { mutableStateOf(updateManager.pendingDownloadedApk()) }
+    val installPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val apk = updateManager.pendingDownloadedApk()
+        pendingApk = apk
+        if (apk != null && !updateManager.needsInstallPermission()) {
+            runCatching { context.startActivity(updateManager.installIntent(apk)) }
+                .onFailure { notice = it.message.orEmpty().ifBlank { "无法打开安装器" } }
+        } else if (apk != null) {
+            notice = "授权未完成，可稍后点击继续安装"
+        }
+    }
+
+    fun openInstaller(apk: File) {
+        if (updateManager.needsInstallPermission()) {
+            notice = "请授权安装未知来源应用，返回后将继续安装"
+            installPermissionLauncher.launch(updateManager.installPermissionIntent())
+        } else {
+            runCatching { context.startActivity(updateManager.installIntent(apk)) }
+                .onFailure { notice = it.message.orEmpty().ifBlank { "无法打开安装器" } }
+        }
+    }
 
     fun checkUpdate() {
         if (checking) return
@@ -2689,9 +2768,9 @@ internal fun AboutSoftwareScreen() {
                     downloading = false
                     result.fold(
                         onSuccess = { apk ->
+                            pendingApk = apk
                             notice = "下载完成，准备安装"
-                            runCatching { context.startActivity(updateManager.installOrRequestPermission(apk)) }
-                                .onFailure { notice = it.message.orEmpty().ifBlank { "无法打开安装器" } }
+                            openInstaller(apk)
                         },
                         onFailure = {
                             val message = it.message.orEmpty().ifBlank { "下载失败" }
@@ -2729,6 +2808,15 @@ internal fun AboutSoftwareScreen() {
                     if (checking) "正在检查更新..." else "点击检测新版本",
                     onClick = ::checkUpdate,
                 )
+                pendingApk?.let { apk ->
+                    KimiDivider()
+                    KimiMenuRow(
+                        Icons.Default.InstallMobile,
+                        updateManager.pendingDownloadedApkLabel(),
+                        "已下载 ${formatBytes(apk.length())}，无需重新下载",
+                        onClick = { openInstaller(apk) },
+                    )
+                }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Apps, "应用 ID", context.packageName)
             }
