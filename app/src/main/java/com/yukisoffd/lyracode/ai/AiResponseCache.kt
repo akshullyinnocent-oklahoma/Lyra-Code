@@ -72,6 +72,7 @@ class AiResponseCache(
             .put("endpoint", normalizeEndpoint(profile.chatEndpoint))
             .put("model", request.optString("model").trim())
             .put("temperature", request.opt("temperature") ?: JSONObject.NULL)
+            .put("reasoning_effort", request.opt("reasoning_effort") ?: JSONObject.NULL)
             .put("tool_choice", request.opt("tool_choice") ?: JSONObject.NULL)
             .put("messages", normalizeMessages(request.optJSONArray("messages") ?: JSONArray()))
             .put("tools", normalizeTools(request.optJSONArray("tools") ?: JSONArray()))

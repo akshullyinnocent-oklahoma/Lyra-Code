@@ -258,6 +258,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
     if (attachmentMenuOpen) {
         AttachmentActionBottomSheet(
             controller = controller,
+            settings = settings,
             page = attachmentMenuPage,
             search = attachmentMenuSearch,
             onPageChange = {
@@ -422,7 +423,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             Text(statusLine, color = KimiMuted, style = MaterialTheme.typography.labelMedium)
         }
         Card(
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().imePadding(),
             shape = RoundedCornerShape(28.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
@@ -462,10 +463,10 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                             modifier = Modifier.size(42.dp),
                             shape = CircleShape,
                             contentPadding = PaddingValues(0.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             onClick = { controller.stopActive() },
                         ) {
-                            Icon(Icons.Default.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.background)
+                            Icon(Icons.Default.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.onPrimary)
                         }
                     }
                     AnimatedVisibility(canSend && !isRunning) {
@@ -474,7 +475,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                             enabled = canSend,
                             shape = CircleShape,
                             contentPadding = PaddingValues(0.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             onClick = {
                                 val text = input
                                 input = ""
@@ -482,7 +483,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                                 controller.send(text)
                             },
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = "发送", tint = MaterialTheme.colorScheme.background)
+                            Icon(Icons.Default.Send, contentDescription = "发送", tint = MaterialTheme.colorScheme.onPrimary)
                         }
                     }
                 }
@@ -517,7 +518,9 @@ internal fun RoleplayChatScreen(
     }
     val messageSnapshot = controller.messages.value
     val visibleMessages = remember(messageSnapshot, isRunning) {
-        val roleMessages = messageSnapshot.filter { it.role == "user" || it.role == "assistant" }
+        val roleMessages = messageSnapshot
+            .filter { it.role == "user" || it.role == "assistant" }
+            .filterNot { it.role == "assistant" && it.content.isBlank() }
         val streamingAssistantId = if (isRunning) roleMessages.lastOrNull { it.role == "assistant" }?.id else null
         roleMessages.filterNot { it.id == streamingAssistantId && it.role == "assistant" }
     }
@@ -648,10 +651,10 @@ internal fun RoleplayChatScreen(
                                 modifier = Modifier.size(42.dp),
                                 shape = CircleShape,
                                 contentPadding = PaddingValues(0.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.onSurface),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                 onClick = onStop,
                             ) {
-                                Icon(Icons.Default.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.background)
+                                Icon(Icons.Default.Stop, contentDescription = "停止", tint = MaterialTheme.colorScheme.onPrimary)
                             }
                         }
                         AnimatedVisibility(canSend && !isRunning) {
@@ -826,6 +829,7 @@ internal fun requestTermuxRunCommandPermission(context: Context) {
 @Composable
 internal fun AttachmentActionBottomSheet(
     controller: ChatController,
+    settings: AppSettings,
     page: String,
     search: String,
     onPageChange: (String) -> Unit,
@@ -838,6 +842,10 @@ internal fun AttachmentActionBottomSheet(
 ) {
     val profiles = controller.profiles.toList()
     val activeProfile = profiles.firstOrNull { it.id == controller.activeProfileId.value } ?: profiles.firstOrNull()
+    val prompts = remember(controller.settingsRevision.intValue) {
+        settings.systemPromptPresets().filterNot { it.id == "roleplay" }
+    }
+    val activePrompt = prompts.firstOrNull { it.id == settings.selectedSystemPromptId } ?: prompts.firstOrNull()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = MaterialTheme.colorScheme.surface,
@@ -875,7 +883,7 @@ internal fun AttachmentActionBottomSheet(
                                 onValueChange = onSearchChange,
                                 modifier = Modifier.fillMaxWidth(),
                                 placeholder = "搜索服务商",
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
                             )
                             val filteredProfiles = profiles.filter { search.isBlank() || it.name.contains(search, ignoreCase = true) }
                             Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
@@ -900,7 +908,7 @@ internal fun AttachmentActionBottomSheet(
                                 onValueChange = onSearchChange,
                                 modifier = Modifier.fillMaxWidth(),
                                 placeholder = "搜索模型",
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
                             )
                             val filteredModels = activeProfile?.savedModels.orEmpty()
                                 .filter { search.isBlank() || it.contains(search, ignoreCase = true) }
@@ -916,6 +924,71 @@ internal fun AttachmentActionBottomSheet(
                                             onDismiss()
                                         },
                                     )
+                                }
+                            }
+                        }
+                        "prompts" -> {
+                            SheetBackTitle("切换提示词") { onPageChange("root") }
+                            CapsuleTextField(
+                                value = search,
+                                onValueChange = onSearchChange,
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = "搜索提示词",
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
+                            )
+                            val filteredPrompts = prompts.filter {
+                                search.isBlank() ||
+                                    it.name.contains(search, ignoreCase = true) ||
+                                    it.prompt.contains(search, ignoreCase = true)
+                            }
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                filteredPrompts.forEach { prompt ->
+                                    ActionSheetRow(
+                                        icon = Icons.Default.EditNote,
+                                        title = prompt.name,
+                                        subtitle = prompt.prompt.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty(),
+                                        trailing = if (prompt.id == settings.selectedSystemPromptId) Icons.Default.Check else null,
+                                        onClick = {
+                                            controller.selectSystemPrompt(prompt.id)
+                                            onDismiss()
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        "reasoning" -> {
+                            SheetBackTitle("推理深度") { onPageChange("root") }
+                            val values = AppSettings.reasoningDepthValues
+                            val current = settings.reasoningDepth.takeIf { it in values } ?: AppSettings.REASONING_AUTO
+                            var sliderPosition by remember(current) { mutableStateOf(values.indexOf(current).coerceAtLeast(0).toFloat()) }
+                            val selected = values.getOrElse(sliderPosition.toInt().coerceIn(0, values.lastIndex)) { AppSettings.REASONING_AUTO }
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(Icons.Default.Lightbulb, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+                                Text(reasoningDepthLabel(selected), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "并非所有模型都支持深度调整；不支持时会自动保持服务商原始参数，避免请求失败。",
+                                    color = KimiMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Slider(
+                                    value = sliderPosition,
+                                    onValueChange = { sliderPosition = it },
+                                    onValueChangeFinished = {
+                                        controller.selectReasoningDepth(values.getOrElse(sliderPosition.toInt().coerceIn(0, values.lastIndex)) { AppSettings.REASONING_AUTO })
+                                    },
+                                    valueRange = 0f..(values.size - 1).toFloat(),
+                                    steps = values.size - 2,
+                                )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    values.forEach { value ->
+                                        Text(reasoningDepthLabel(value), color = if (value == selected) MaterialTheme.colorScheme.primary else KimiMuted, style = MaterialTheme.typography.labelSmall)
+                                    }
                                 }
                             }
                         }
@@ -961,12 +1034,34 @@ internal fun AttachmentActionBottomSheet(
                                 subtitle = "从 models 端点刷新可用模型",
                                 onClick = onFetchModels,
                             )
+                            ActionSheetRow(
+                                icon = Icons.Default.EditNote,
+                                title = "提示词",
+                                subtitle = activePrompt?.name ?: "默认助手",
+                                trailing = Icons.Default.ChevronRight,
+                                onClick = { onPageChange("prompts") },
+                            )
+                            ActionSheetRow(
+                                icon = Icons.Default.Tune,
+                                title = "推理深度",
+                                subtitle = reasoningDepthLabel(settings.reasoningDepth),
+                                trailing = Icons.Default.ChevronRight,
+                                onClick = { onPageChange("reasoning") },
+                            )
                         }
                     }
                 }
             }
         }
     }
+}
+
+private fun reasoningDepthLabel(value: String): String = when (value) {
+    AppSettings.REASONING_LOW -> "低"
+    AppSettings.REASONING_MEDIUM -> "中"
+    AppSettings.REASONING_HIGH -> "高"
+    AppSettings.REASONING_ULTRA -> "超高"
+    else -> "自动"
 }
 
 @Composable
@@ -1021,7 +1116,7 @@ internal fun ActionSheetRow(
                 Text(subtitle, color = KimiMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        trailing?.let { Icon(it, contentDescription = null, tint = KimiMuted) }
+        trailing?.let { Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
     }
 }
 
@@ -1037,7 +1132,7 @@ internal fun DropdownSearchField(
             onValueChange = onValueChange,
             modifier = Modifier.widthIn(min = 220.dp, max = 320.dp),
             placeholder = placeholder,
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = KimiMuted) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary) },
         )
     }
 }
@@ -1166,7 +1261,7 @@ internal fun chatRenderItems(messages: List<ChatRecord>): List<ChatRenderItem> {
     fun flushProcess(beforeId: Long) {
         if (processBuffer.isNotEmpty()) {
             val group = processBuffer.toList()
-            result += ChatRenderItem("process-${group.first().id}-${group.last().id}-before-$beforeId", process = group)
+            result += ChatRenderItem("process-${group.first().id}", process = group)
             processBuffer.clear()
         }
     }

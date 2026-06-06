@@ -370,6 +370,7 @@ class OpenAiAgent(
             .put("temperature", 0.2)
             .put("stream", true)
         applyProviderCacheHints(requestJson, profile, model)
+        applyReasoningDepthHint(requestJson, profile, model)
 
         responseCache?.get(profile, requestJson)?.let { cached ->
             val result = cached.toStreamingResult()
@@ -455,6 +456,26 @@ class OpenAiAgent(
             ),
         )
         return StreamingResult(cleanContent, cleanThinking, message, calls)
+    }
+
+    private fun applyReasoningDepthHint(requestJson: JSONObject, profile: ApiProfile, model: String) {
+        val depth = settings.reasoningDepth
+        if (depth == AppSettings.REASONING_AUTO) return
+        if (profile.apiFormat != ApiProfile.API_FORMAT_OPENAI) return
+        if (!modelLooksReasoningCapable(model)) return
+        val effort = when (depth) {
+            AppSettings.REASONING_LOW -> "low"
+            AppSettings.REASONING_MEDIUM -> "medium"
+            AppSettings.REASONING_HIGH, AppSettings.REASONING_ULTRA -> "high"
+            else -> return
+        }
+        requestJson.put("reasoning_effort", effort)
+    }
+
+    private fun modelLooksReasoningCapable(model: String): Boolean {
+        val clean = model.lowercase(Locale.US)
+        return listOf("o1", "o3", "o4", "gpt-5", "reason", "reasoner", "r1", "qwen3", "glm-4.5", "glm-5")
+            .any { clean.contains(it) }
     }
 
     private suspend fun requestAnthropicModel(
@@ -1209,10 +1230,13 @@ class OpenAiAgent(
                     if (destination == "webdav") {
                         val server = settings.resolveWebDavServer(args.getString("server_id"))
                             ?: error("WebDAV 服务器不存在或已禁用: ${args.optString("server_id")}")
-                        val remotePath = args.optString("remote_path").ifBlank { "/LyraCode/lyra_backup_${System.currentTimeMillis()}.zip" }
+                        val remotePath = args.optString("remote_path").ifBlank { DEFAULT_WEBDAV_BACKUP_PATH }
                         val bytes = backupManager.exportZip(options)
                         webDavClient.upload(server, remotePath, bytes)
-                        ToolExecution("已导出备份并上传 WebDAV: ${server.name}:$remotePath，大小 ${bytes.size} bytes。")
+                        ToolExecution(
+                            "已导出备份并上传 WebDAV: ${server.name}:$remotePath，大小 ${bytes.size} bytes。\n" +
+                                "未指定 remote_path 时会覆盖固定 latest 备份路径，之后可直接从 WebDAV 导入，无需手动查找时间戳文件名。",
+                        )
                     } else {
                         ToolExecution(backupManager.exportToDownloads(options))
                     }
@@ -1222,7 +1246,8 @@ class OpenAiAgent(
                     val result = if (source == "webdav") {
                         val server = settings.resolveWebDavServer(args.getString("server_id"))
                             ?: error("WebDAV 服务器不存在或已禁用: ${args.optString("server_id")}")
-                        val bytes = webDavClient.download(server, args.getString("remote_path"))
+                        val remotePath = resolveWebDavBackupPath(server, args.optString("remote_path"))
+                        val bytes = webDavClient.download(server, remotePath)
                         backupManager.importZip(bytes, "supplement")
                     } else if (source == "download" || source == "global") {
                         val path = args.optString("global_path").ifBlank { args.optString("local_path") }
@@ -1287,6 +1312,30 @@ class OpenAiAgent(
                 output
             },
         )
+    }
+
+    private fun resolveWebDavBackupPath(server: WebDavServerConfig, requestedPath: String): String {
+        val explicit = requestedPath.trim()
+        if (explicit.isNotBlank()) return explicit
+        val files = runCatching { webDavClient.list(server, "/LyraCode", depth = 1) }.getOrDefault(emptyList())
+        val latest = files
+            .filter { !it.directory && it.path.endsWith(".zip", ignoreCase = true) }
+            .filter {
+                val name = it.path.substringAfterLast('/').lowercase(Locale.US)
+                "backup" in name || "lyra" in name
+            }
+        latest.firstOrNull { it.path.equals(DEFAULT_WEBDAV_BACKUP_PATH, ignoreCase = true) }?.let { return it.path }
+        return latest.maxWithOrNull(
+            compareBy<com.yukisoffd.lyracode.webdav.WebDavFile> { parseWebDavModifiedMillis(it.modified) }
+                .thenBy { it.path },
+        )?.path ?: DEFAULT_WEBDAV_BACKUP_PATH
+    }
+
+    private fun parseWebDavModifiedMillis(value: String): Long {
+        if (value.isBlank()) return 0L
+        return runCatching {
+            SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US).parse(value)?.time ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun parseTodoItems(args: JSONObject): List<TodoItem> {
@@ -2457,7 +2506,10 @@ class OpenAiAgent(
             run_command 会等待 Termux 回传 exit_code、stdout、stderr；命令非 0 退出也会返回 stderr，看到报错后应直接修正。不要运行不会退出的长期驻留命令。
             如遇回传超时或输出过大，再让命令把结果写入工作目录文件并用 read_file 读取。Shell 重定向 stdout 和 stderr 时必须写成 "> output.txt 2>&1"，文件名和 2>&1 之间要有空格。
             需要联网获取最新信息时，可使用 web_search 搜索，再用 read_web_page 读取候选网页正文；回答中应基于读取到的网页内容判断，不要把搜索摘要当作最终事实。
+            web_search 会返回排序后的候选网页、相关性提示和可能的低质量信号。优先读取官方文档、原始发布源、权威媒体或和问题关键词高度匹配的页面；遇到 SEO 聚合页、广告页、搜索结果页、论坛搬运或摘要明显无关时不要反复读取，应换用更精确关键词、限定站点或读取排名更高的可信来源。
+            read_web_page 会标注 readable、limited 或 blocked_or_dynamic。若页面提示人机验证、Cloudflare、403、登录墙、JavaScript 渲染不足或正文过短，不要把该内容当事实依据；改读其他来源，必要时告知用户该网页存在访问防护。
             当最终回答依赖 read_web_page 或网页搜索结果时，必须先调用 mark_web_sources 声明本轮实际引用的网页；最终回答中把受网页支持的关键结论就近标注来源链接，方便用户点击核对。不要伪造未读取网页的来源。
+            WebDAV 云备份未指定 remote_path 时默认上传到 /LyraCode/lyra_backup_latest.zip；从 WebDAV 导入备份时 remote_path 可留空，应用会优先读取 latest 备份，若不存在则自动查找 /LyraCode 下最新的 Lyra backup zip。不要让用户手动猜时间戳文件名。
             当用户要求“帮我添加/配置/安装/启用/禁用/删除/修改”MCP 服务器、SSH 连接、Skills 或 Agent 工具时，使用 manage_app_config。若用户给的是介绍网页，先 web_search/read_web_page 获取配置 JSON、zip 下载链接或连接参数；缺少 API key、密码、私钥等必要敏感信息时，先向用户索取，不能编造。manage_app_config 会触发用户确认；被拒绝后按用户反馈调整，不要重复提交相同配置。
             manage_app_config 添加的 MCP、SSH、Skills 与用户在设置页手动添加完全等价，会出现在设置中；Agent 工具只能启用或禁用，不能删除，且不得禁用 manage_app_config 自身。
             如果当前是新会话的首次用户请求，且工具列表中存在 set_conversation_topic，请先调用它为本次对话设置一个 4-12 个汉字或 2-6 个英文词的简短主题标题；标题只概括用户第一条消息，不要包含“关于/请问/帮我”等空泛词。调用后继续正常回答用户。若工具不可用，不要提及标题设置。
@@ -2614,7 +2666,7 @@ class OpenAiAgent(
         .put(
             functionWithOptional(
                 "export_backup",
-                "导出 Lyra Code 备份到 Download/LyraCode 或 WebDAV。包含密钥时必须提醒用户妥善保管；destination 为 local 或 webdav。",
+                "导出 Lyra Code 备份到 Download/LyraCode 或 WebDAV。包含密钥时必须提醒用户妥善保管；destination 为 local 或 webdav。WebDAV 未指定 remote_path 时默认覆盖 /LyraCode/lyra_backup_latest.zip，便于下次直接导入。",
                 required = listOf("destination" to "string"),
                 optional = listOf(
                     "server_id" to "string",
@@ -2634,7 +2686,7 @@ class OpenAiAgent(
         .put(
             functionWithOptional(
                 "import_backup",
-                "从工作区本地 zip、Android Download/共享存储 zip 或 WebDAV zip 导入 Lyra Code 备份。Agent 固定使用补充模式导入并去重，不允许覆盖模式。source 可用 local、download、global、webdav；download/global 使用 global_path 或 local_path。",
+                "从工作区本地 zip、Android Download/共享存储 zip 或 WebDAV zip 导入 Lyra Code 备份。Agent 固定使用补充模式导入并去重，不允许覆盖模式。source 可用 local、download、global、webdav；download/global 使用 global_path 或 local_path。WebDAV 的 remote_path 可留空，应用会优先导入 /LyraCode/lyra_backup_latest.zip，找不到则自动选择 /LyraCode 下最新的 Lyra backup zip。",
                 required = listOf("source" to "string"),
                 optional = listOf("server_id" to "string", "remote_path" to "string", "local_path" to "string", "global_path" to "string"),
             ),
@@ -2948,6 +3000,7 @@ class OpenAiAgent(
         private const val PROMPT_CACHE_KEY_HASH_CHARS = 32
         private const val GLOBAL_SEARCH_RESULT_LIMIT = 120
         private const val MAX_IMAGE_PROMPT_BYTES = 8 * 1024 * 1024
+        private const val DEFAULT_WEBDAV_BACKUP_PATH = "/LyraCode/lyra_backup_latest.zip"
         private val JSON_SCHEMA_TYPES = setOf("string", "number", "integer", "boolean", "object", "array")
         private val CONFIGURABLE_AGENT_TOOLS = listOf(
             "list_directory",

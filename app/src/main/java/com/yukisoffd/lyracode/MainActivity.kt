@@ -225,13 +225,29 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             var themeMode by remember { mutableStateOf(settings.themeMode) }
+            var dynamicColorEnabled by remember { mutableStateOf(settings.dynamicColorEnabled) }
+            var fontScaleMode by remember { mutableStateOf(settings.fontScaleMode) }
+            var customFontScale by remember { mutableStateOf(settings.customFontScale) }
             val systemDark = isSystemInDarkTheme()
+            val systemFontScale = LocalDensity.current.fontScale
+            val effectiveFontScale = when (fontScaleMode) {
+                AppSettings.FONT_SCALE_SMALL -> 0.9f
+                AppSettings.FONT_SCALE_NORMAL -> 1.0f
+                AppSettings.FONT_SCALE_LARGE -> 1.12f
+                AppSettings.FONT_SCALE_EXTRA_LARGE -> 1.25f
+                AppSettings.FONT_SCALE_CUSTOM -> customFontScale
+                else -> systemFontScale
+            }.coerceIn(0.85f, 1.35f)
             val darkMode = when (themeMode) {
                 AppSettings.THEME_LIGHT -> false
                 AppSettings.THEME_DARK -> true
                 else -> systemDark
             }
-            LyraCodeTheme(darkMode) {
+            LyraCodeTheme(
+                darkMode = darkMode,
+                dynamicColor = dynamicColorEnabled,
+                fontScale = effectiveFontScale,
+            ) {
                 LyraCodeApp(
                     settings = settings,
                     auditLogStore = auditLogStore,
@@ -247,6 +263,21 @@ class MainActivity : ComponentActivity() {
                         themeMode = it
                         settings.themeMode = it
                         settings.darkMode = it == AppSettings.THEME_DARK
+                    },
+                    dynamicColorEnabled = dynamicColorEnabled,
+                    onDynamicColorChange = {
+                        dynamicColorEnabled = it
+                        settings.dynamicColorEnabled = it
+                    },
+                    fontScaleMode = fontScaleMode,
+                    customFontScale = customFontScale,
+                    onFontScaleModeChange = {
+                        fontScaleMode = it
+                        settings.fontScaleMode = it
+                    },
+                    onCustomFontScaleChange = {
+                        customFontScale = it
+                        settings.customFontScale = it
                     },
                 )
             }

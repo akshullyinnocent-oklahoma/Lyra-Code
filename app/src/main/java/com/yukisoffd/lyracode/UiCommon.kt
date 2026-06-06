@@ -105,11 +105,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -151,6 +154,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.shape.CircleShape
@@ -202,7 +206,14 @@ import kotlin.math.abs
 import android.graphics.Canvas as AndroidCanvas
 
 @Composable
-internal fun LyraCodeTheme(darkMode: Boolean, content: @Composable () -> Unit) {
+internal fun LyraCodeTheme(
+    darkMode: Boolean,
+    dynamicColor: Boolean,
+    fontScale: Float,
+    content: @Composable () -> Unit,
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
     val light = lightColorScheme(
         primary = Color(0xFF181818),
         secondary = Color(0xFF4E7DFF),
@@ -224,7 +235,35 @@ internal fun LyraCodeTheme(darkMode: Boolean, content: @Composable () -> Unit) {
         onSurfaceVariant = Color(0xFF8E8E8E),
         outline = KimiLine,
     )
-    MaterialTheme(colorScheme = if (darkMode) dark else light, content = content)
+    val baseScheme = if (darkMode) dark else light
+    val colorScheme = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val dynamicScheme = if (darkMode) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        baseScheme.copy(
+            primary = dynamicScheme.primary,
+            onPrimary = dynamicScheme.onPrimary,
+            primaryContainer = dynamicScheme.primaryContainer,
+            onPrimaryContainer = dynamicScheme.onPrimaryContainer,
+            inversePrimary = dynamicScheme.inversePrimary,
+            secondary = dynamicScheme.secondary,
+            onSecondary = dynamicScheme.onSecondary,
+            secondaryContainer = dynamicScheme.secondaryContainer,
+            onSecondaryContainer = dynamicScheme.onSecondaryContainer,
+            tertiary = dynamicScheme.tertiary,
+            onTertiary = dynamicScheme.onTertiary,
+            tertiaryContainer = dynamicScheme.tertiaryContainer,
+            onTertiaryContainer = dynamicScheme.onTertiaryContainer,
+            error = dynamicScheme.error,
+            onError = dynamicScheme.onError,
+            errorContainer = dynamicScheme.errorContainer,
+            onErrorContainer = dynamicScheme.onErrorContainer,
+            surfaceTint = dynamicScheme.primary,
+        )
+    } else {
+        baseScheme
+    }
+    CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale.coerceIn(0.85f, 1.35f))) {
+        MaterialTheme(colorScheme = colorScheme, content = content)
+    }
 }
 
 internal val KimiBg = Color(0xFF0B0B0B)
@@ -305,7 +344,7 @@ internal fun KimiMenuRow(
                 )
             }
         }
-        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleLarge)
+        Text("›", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge)
     }
 }
 
@@ -329,7 +368,7 @@ internal fun KimiMenuRow(
                 icon,
                 contentDescription = null,
                 modifier = Modifier.size(24.dp),
-                tint = MaterialTheme.colorScheme.onSurface,
+                tint = MaterialTheme.colorScheme.primary,
             )
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -352,7 +391,7 @@ internal fun KimiMenuRow(
         Icon(
             Icons.Default.ChevronRight,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = MaterialTheme.colorScheme.primary,
         )
     }
 }
@@ -371,7 +410,7 @@ internal fun PlusBadgeIcon(
                 .align(Alignment.TopEnd)
                 .background(MaterialTheme.colorScheme.background, CircleShape)
                 .padding(horizontal = 1.dp),
-            color = MaterialTheme.colorScheme.onBackground,
+            color = MaterialTheme.colorScheme.primary,
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
     }
@@ -388,9 +427,9 @@ internal fun KimiChip(
         modifier = modifier
             .clip(KimiPillShape)
             .clickable(onClick = onClick)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.62f))
             .padding(horizontal = 16.dp, vertical = 10.dp),
-        color = MaterialTheme.colorScheme.onSurface,
+        color = MaterialTheme.colorScheme.onPrimaryContainer,
         style = MaterialTheme.typography.bodyMedium,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,

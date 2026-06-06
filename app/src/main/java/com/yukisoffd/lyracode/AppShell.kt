@@ -217,6 +217,12 @@ internal fun LyraCodeApp(
     controller: ChatController,
     themeMode: String,
     onThemeModeChange: (String) -> Unit,
+    dynamicColorEnabled: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
+    fontScaleMode: String,
+    customFontScale: Float,
+    onFontScaleModeChange: (String) -> Unit,
+    onCustomFontScaleChange: (Float) -> Unit,
 ) {
     val pages = listOf("AI 对话", "日志", "设置")
     var selectedPage by rememberSaveable { mutableIntStateOf(0) }
@@ -337,8 +343,8 @@ internal fun LyraCodeApp(
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background,
                         titleContentColor = MaterialTheme.colorScheme.onBackground,
-                        navigationIconContentColor = MaterialTheme.colorScheme.onBackground,
-                        actionIconContentColor = MaterialTheme.colorScheme.onBackground,
+                        navigationIconContentColor = MaterialTheme.colorScheme.primary,
+                        actionIconContentColor = MaterialTheme.colorScheme.primary,
                     ),
                     navigationIcon = {
                         IconButton(
@@ -418,7 +424,7 @@ internal fun LyraCodeApp(
                                     requestNewConversation()
                                 }) {
                                     PlusBadgeIcon(
-                                        baseIcon = { Icon(Icons.Default.Info, contentDescription = null) },
+                                        baseIcon = { Icon(Icons.Default.ChatBubble, contentDescription = null) },
                                     )
                                 }
                             }
@@ -455,6 +461,12 @@ internal fun LyraCodeApp(
                             backupStatus = backupStatus,
                             themeMode = themeMode,
                             onThemeModeChange = onThemeModeChange,
+                            dynamicColorEnabled = dynamicColorEnabled,
+                            onDynamicColorChange = onDynamicColorChange,
+                            fontScaleMode = fontScaleMode,
+                            customFontScale = customFontScale,
+                            onFontScaleModeChange = onFontScaleModeChange,
+                            onCustomFontScaleChange = onCustomFontScaleChange,
                             onPickWorkspace = { treeLauncher.launch(null) },
                             onImportSkill = { skillZipLauncher.launch("*/*") },
                             onImportBackup = { mode ->
@@ -611,7 +623,7 @@ internal fun KimiDrawerContent(
                     onValueChange = { historyQuery = it },
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = "搜索历史对话",
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
                 )
                 if (selectedHistoryIds.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -901,7 +913,7 @@ internal fun SkillsScreen(
         if (skills.isEmpty()) {
             KimiCardBox {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Default.Extension, contentDescription = null, tint = KimiMuted)
+                    Icon(Icons.Default.Extension, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("暂无 Skills", style = MaterialTheme.typography.titleMedium)
                         Text("导入 zip 后会在这里显示，可启用、禁用或删除。", color = KimiMuted)

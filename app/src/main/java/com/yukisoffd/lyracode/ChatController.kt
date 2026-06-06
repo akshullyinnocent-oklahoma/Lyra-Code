@@ -135,6 +135,16 @@ class ChatController(
         }
     }
 
+    fun selectSystemPrompt(promptId: String) {
+        settings.selectedSystemPromptId = promptId
+        settingsRevision.intValue++
+    }
+
+    fun selectReasoningDepth(depth: String) {
+        settings.reasoningDepth = depth
+        settingsRevision.intValue++
+    }
+
     fun newConversation() {
         val profile = currentProfile()
         val roleplayId = currentRoleplayId()

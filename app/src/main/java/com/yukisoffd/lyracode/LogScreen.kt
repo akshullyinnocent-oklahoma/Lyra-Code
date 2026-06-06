@@ -257,7 +257,7 @@ internal fun LogCard(entry: AuditEntry, onClick: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted)
+                Icon(Icons.Default.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                 Text("${entry.kind} · ${formatTime(entry.createdAt)}", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
             }
             Text(entry.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -47,6 +47,8 @@ class BackupManager(
             if (!options.includePrompts) {
                 remove("selectedSystemPromptId")
                 remove("customSystemPrompts")
+                remove("systemPromptConfigs")
+                remove("reasoningDepth")
             }
             if (!options.includeWebDav) remove("webDavServers")
             if (!options.includeRoleplay) {

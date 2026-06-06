@@ -37,7 +37,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
@@ -101,6 +105,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -130,6 +135,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -144,6 +150,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -180,6 +187,7 @@ import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.RoleplayScenario
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
+import com.yukisoffd.lyracode.data.SystemPromptPreset
 import com.yukisoffd.lyracode.data.AppUpdateInfo
 import com.yukisoffd.lyracode.data.UpdateDownloadProgress
 import com.yukisoffd.lyracode.data.UpdateManager
@@ -226,6 +234,12 @@ internal fun SettingsScreen(
     backupStatus: String,
     themeMode: String,
     onThemeModeChange: (String) -> Unit,
+    dynamicColorEnabled: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
+    fontScaleMode: String,
+    customFontScale: Float,
+    onFontScaleModeChange: (String) -> Unit,
+    onCustomFontScaleChange: (Float) -> Unit,
     onPickWorkspace: () -> Unit,
     onImportSkill: () -> Unit,
     onImportBackup: (String) -> Unit,
@@ -261,7 +275,21 @@ internal fun SettingsScreen(
                     "profile" -> ProfileSettingsSummary(settings)
                     "model" -> ModelServiceSettings(settings, controller)
                     "workspace" -> WorkspaceSettings(workspaceDisplayName, workspaceManager, onPickWorkspace)
-                    "theme" -> ThemeSettings(themeMode, onThemeModeChange)
+                    "theme" -> ThemeSettings(
+                        themeMode = themeMode,
+                        onThemeModeChange = onThemeModeChange,
+                        dynamicColorEnabled = dynamicColorEnabled,
+                        onDynamicColorChange = onDynamicColorChange,
+                        fontScaleMode = fontScaleMode,
+                        customFontScale = customFontScale,
+                        onOpenFontSettings = { detail = "font" },
+                    )
+                    "font" -> FontSizeSettings(
+                        fontScaleMode = fontScaleMode,
+                        customFontScale = customFontScale,
+                        onFontScaleModeChange = onFontScaleModeChange,
+                        onCustomFontScaleChange = onCustomFontScaleChange,
+                    )
                     "permissions" -> PermissionSettings(termuxExecutor)
                     "tools" -> AgentToolSettings(settings, termuxExecutor, controller.settingsRevision.intValue)
                     "termux" -> TermuxSettings(settings, termuxExecutor, workspaceManager)
@@ -322,7 +350,11 @@ internal fun SettingsScreen(
             }
             KimiSectionLabel("个性化")
             KimiCardBox {
-                KimiMenuRow(Icons.Default.Palette, "主题设置", "当前：${themeName(themeMode)}") { detail = "theme" }
+                KimiMenuRow(
+                    Icons.Default.Palette,
+                    "主题设置",
+                    "当前：${themeName(themeMode)} · ${fontScaleName(fontScaleMode, customFontScale)}",
+                ) { detail = "theme" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.EditNote, "系统提示词", "配置不同用途的默认提示词") { detail = "prompts" }
                 KimiDivider()
@@ -379,6 +411,7 @@ internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "model" -> "模型服务"
     "workspace" -> "工作目录"
     "theme" -> "主题设置"
+    "font" -> "字体大小"
     "permissions" -> "应用权限"
     "tools" -> "AI Agent 工具"
     "storage" -> "缓存与存储"
@@ -975,13 +1008,32 @@ internal fun WorkspaceSettings(
 }
 
 @Composable
-internal fun ThemeSettings(themeMode: String, onThemeModeChange: (String) -> Unit) {
+internal fun ThemeSettings(
+    themeMode: String,
+    onThemeModeChange: (String) -> Unit,
+    dynamicColorEnabled: Boolean,
+    onDynamicColorChange: (Boolean) -> Unit,
+    fontScaleMode: String,
+    customFontScale: Float,
+    onOpenFontSettings: () -> Unit,
+) {
     KimiCardBox {
+        Text("主题模式", style = MaterialTheme.typography.titleMedium)
+        KimiDivider()
         ThemeOptionRow("跟随系统", AppSettings.THEME_SYSTEM, themeMode, onThemeModeChange)
         KimiDivider()
         ThemeOptionRow("浅色", AppSettings.THEME_LIGHT, themeMode, onThemeModeChange)
         KimiDivider()
         ThemeOptionRow("深色", AppSettings.THEME_DARK, themeMode, onThemeModeChange)
+    }
+    KimiCardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.width(36.dp).size(24.dp))
+            Text("Material You 动态配色", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            Switch(checked = dynamicColorEnabled, onCheckedChange = onDynamicColorChange)
+        }
+        KimiDivider()
+        KimiMenuRow(Icons.Default.FormatSize, "字体大小", fontScaleName(fontScaleMode, customFontScale), onOpenFontSettings)
     }
 }
 
@@ -1001,10 +1053,110 @@ internal fun ThemeOptionRow(title: String, value: String, selected: String, onSe
     }
 }
 
+@Composable
+internal fun FontSizeSettings(
+    fontScaleMode: String,
+    customFontScale: Float,
+    onFontScaleModeChange: (String) -> Unit,
+    onCustomFontScaleChange: (Float) -> Unit,
+) {
+    val initialScale = remember(fontScaleMode, customFontScale) {
+        when (fontScaleMode) {
+            AppSettings.FONT_SCALE_SMALL -> 0.9f
+            AppSettings.FONT_SCALE_LARGE -> 1.12f
+            AppSettings.FONT_SCALE_EXTRA_LARGE -> 1.25f
+            AppSettings.FONT_SCALE_CUSTOM -> customFontScale
+            else -> 1.0f
+        }.coerceIn(0.85f, 1.35f)
+    }
+    var draftScale by remember(fontScaleMode, customFontScale) { mutableStateOf(initialScale) }
+    val followSystem = fontScaleMode == AppSettings.FONT_SCALE_SYSTEM
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(top = 18.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
+                ) {
+                    Text(
+                        "预览文字大小",
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.titleMedium.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize * draftScale),
+                    )
+                }
+            }
+            Text(
+                "你可以拖动滑块来调整字体大小。",
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = MaterialTheme.typography.titleLarge.fontSize * draftScale),
+            )
+            Text(
+                "如果在使用过程中存在问题或建议，可在关于软件页面查看仓库链接并反馈。",
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize * draftScale),
+                lineHeight = MaterialTheme.typography.titleMedium.lineHeight * draftScale,
+            )
+        }
+        KimiCardBox {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("跟随系统", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                Switch(
+                    checked = followSystem,
+                    onCheckedChange = { checked ->
+                        if (checked) {
+                            onFontScaleModeChange(AppSettings.FONT_SCALE_SYSTEM)
+                        } else {
+                            onFontScaleModeChange(AppSettings.FONT_SCALE_CUSTOM)
+                            onCustomFontScaleChange(draftScale)
+                        }
+                    },
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("A", style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(fontScaleLabel(draftScale), color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+                    Slider(
+                        value = draftScale,
+                        onValueChange = { draftScale = it },
+                        onValueChangeFinished = {
+                            onFontScaleModeChange(AppSettings.FONT_SCALE_CUSTOM)
+                            onCustomFontScaleChange(draftScale)
+                        },
+                        valueRange = 0.85f..1.35f,
+                        steps = 4,
+                        enabled = !followSystem,
+                    )
+                }
+                Text("A", style = MaterialTheme.typography.headlineSmall)
+            }
+        }
+    }
+}
+
+internal fun fontScaleLabel(scale: Float): String = when {
+    scale < 0.95f -> "小"
+    scale < 1.06f -> "标准"
+    scale < 1.18f -> "大"
+    else -> "超大"
+}
+
 internal fun themeName(mode: String): String = when (mode) {
     AppSettings.THEME_LIGHT -> "浅色"
     AppSettings.THEME_DARK -> "深色"
     else -> "跟随系统"
+}
+
+internal fun fontScaleName(mode: String, customFontScale: Float): String = when (mode) {
+    AppSettings.FONT_SCALE_SMALL -> "小字"
+    AppSettings.FONT_SCALE_NORMAL -> "标准字"
+    AppSettings.FONT_SCALE_LARGE -> "大字"
+    AppSettings.FONT_SCALE_EXTRA_LARGE -> "超大字"
+    AppSettings.FONT_SCALE_CUSTOM -> "自定义 ${(customFontScale * 100).toInt()}%"
+    else -> "字体跟随系统"
 }
 
 @Composable
@@ -1247,7 +1399,7 @@ internal fun AgentToolSettings(settings: AppSettings, termuxExecutor: TermuxExec
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
             placeholder = "搜索名称、工具名或描述",
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = KimiMuted) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
         )
         Text("匹配 ${filteredLocalTools.size + filteredMcpTools.size} / ${localTools.size + mcpTools.size} 个工具", color = KimiMuted, style = MaterialTheme.typography.labelSmall)
     }
@@ -1562,7 +1714,7 @@ internal fun BackupSettings(
     var includeWebDav by rememberSaveable { mutableStateOf(true) }
     var includeSecrets by rememberSaveable { mutableStateOf(false) }
     var selectedServerId by rememberSaveable { mutableStateOf(webDavServers.firstOrNull()?.id.orEmpty()) }
-    var remotePath by rememberSaveable { mutableStateOf("/LyraCode/lyra_backup_${System.currentTimeMillis()}.zip") }
+    var remotePath by rememberSaveable { mutableStateOf(DEFAULT_WEBDAV_BACKUP_PATH) }
     var transferStatus by remember { mutableStateOf("") }
     val selectedServer = webDavServers.firstOrNull { it.id == selectedServerId } ?: webDavServers.firstOrNull()
 
@@ -1639,10 +1791,11 @@ internal fun BackupSettings(
                             val result = withContext(Dispatchers.IO) {
                                 runCatching {
                                     val bytes = backupManager.exportZip(options())
-                                    webDavClient.upload(server, remotePath, bytes) { progress ->
+                                    val targetPath = remotePath.ifBlank { DEFAULT_WEBDAV_BACKUP_PATH }
+                                    webDavClient.upload(server, targetPath, bytes) { progress ->
                                         scope.launch { transferStatus = formatTransferProgress(progress) }
                                     }
-                                    "已上传到 ${server.name}:$remotePath"
+                                    "已上传到 ${server.name}:$targetPath"
                                 }.fold({ it }, { "上传失败：${it.message}" })
                             }
                             transferStatus = ""
@@ -1658,10 +1811,19 @@ internal fun BackupSettings(
                             onStatusChange("正在从 WebDAV 下载并补充导入...")
                             val result = withContext(Dispatchers.IO) {
                                 runCatching {
-                                    val bytes = webDavClient.download(server, remotePath) { progress ->
-                                        scope.launch { transferStatus = formatTransferProgress(progress) }
+                                    val requested = remotePath.trim().ifBlank { DEFAULT_WEBDAV_BACKUP_PATH }
+                                    var usedPath = requested
+                                    val bytes = runCatching {
+                                        webDavClient.download(server, requested) { progress ->
+                                            scope.launch { transferStatus = formatTransferProgress(progress) }
+                                        }
+                                    }.getOrElse {
+                                        usedPath = resolveLatestWebDavBackupPath(webDavClient, server, requested)
+                                        webDavClient.download(server, usedPath) { progress ->
+                                            scope.launch { transferStatus = formatTransferProgress(progress) }
+                                        }
                                     }
-                                    backupManager.importZip(bytes, "supplement")
+                                    "从 $usedPath 补充导入：${backupManager.importZip(bytes, "supplement")}"
                                 }.fold({ "导入完成：$it" }, { "导入失败：${it.message}" })
                             }
                             transferStatus = ""
@@ -1674,6 +1836,20 @@ internal fun BackupSettings(
             }
         }
     }
+}
+
+private const val DEFAULT_WEBDAV_BACKUP_PATH = "/LyraCode/lyra_backup_latest.zip"
+
+private fun resolveLatestWebDavBackupPath(client: WebDavClient, server: WebDavServerConfig, rawPath: String): String {
+    val requested = rawPath.trim().ifBlank { DEFAULT_WEBDAV_BACKUP_PATH }
+    val directory = requested.substringBeforeLast('/', "/").ifBlank { "/" }.let { if (it.endsWith("/")) it else "$it/" }
+    val candidates = client.list(server, directory, depth = 1)
+        .filter {
+            val name = it.path.substringAfterLast('/')
+            name.endsWith(".zip", ignoreCase = true) && name.contains("lyra_backup", ignoreCase = true)
+        }
+        .sortedWith(compareByDescending<com.yukisoffd.lyracode.webdav.WebDavFile> { it.modified }.thenByDescending { it.path.substringAfterLast('/') })
+    return candidates.firstOrNull()?.path ?: requested
 }
 
 @Composable
@@ -2535,9 +2711,9 @@ internal fun AboutSoftwareScreen() {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            AboutLogoHeader()
             KimiCardBox {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Lyra Code", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "面向 Android 的本地 AI Agent 工具，支持多平台模型、流式对话、Termux、工作区文件操作、联网搜索、MCP、Skills、TODO 进度和文件变更审查。",
                         color = KimiMuted,
@@ -2558,13 +2734,35 @@ internal fun AboutSoftwareScreen() {
             }
             KimiSectionLabel("仓库")
             KimiCardBox {
-                KimiMenuRow(Icons.Default.Code, "GitHub", "Soffd/Lyra-Code") {
-                    uriHandler.openUri("https://github.com/Soffd/Lyra-Code")
-                }
+                SocialLinkRow(
+                    logo = { SocialLogoBadge(R.drawable.ic_simple_github) },
+                    title = "GitHub",
+                    value = "Soffd/Lyra-Code",
+                    onClick = { uriHandler.openUri("https://github.com/Soffd/Lyra-Code") },
+                )
                 KimiDivider()
-                KimiMenuRow(Icons.Default.Link, "Gitee", "yukisoffd/lyra-code") {
-                    uriHandler.openUri("https://gitee.com/yukisoffd/lyra-code")
-                }
+                SocialLinkRow(
+                    logo = { SocialLogoBadge(R.drawable.ic_simple_gitee) },
+                    title = "Gitee",
+                    value = "yukisoffd/lyra-code",
+                    onClick = { uriHandler.openUri("https://gitee.com/yukisoffd/lyra-code") },
+                )
+            }
+            KimiSectionLabel("社交群聊")
+            KimiCardBox {
+                SocialLinkRow(
+                    logo = { SocialLogoBadge(R.drawable.ic_simple_qq) },
+                    title = "QQ 群",
+                    value = "加入 Lyra Code QQ 群聊",
+                    onClick = { uriHandler.openUri("https://qm.qq.com/q/Ws8objzR84") },
+                )
+                KimiDivider()
+                SocialLinkRow(
+                    logo = { SocialLogoBadge(R.drawable.ic_simple_discord) },
+                    title = "Discord",
+                    value = "加入 Lyra Code Discord 社区",
+                    onClick = { uriHandler.openUri("https://discord.gg/3Mx3F4RTP9") },
+                )
             }
             KimiSectionLabel("隐私与安全")
             KimiCardBox {
@@ -2595,6 +2793,159 @@ internal fun AboutSoftwareScreen() {
                 .align(Alignment.Center)
                 .padding(24.dp),
             onDismiss = { notice = "" },
+        )
+    }
+}
+
+@Composable
+internal fun SocialLinkRow(
+    logo: @Composable () -> Unit,
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.width(48.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            logo()
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                title,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                value,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            Icons.Default.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+internal fun SocialLogoBadge(
+    iconRes: Int,
+) {
+    Box(
+        modifier = Modifier
+            .size(36.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(28.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+@Composable
+internal fun AboutLogoHeader() {
+    val context = LocalContext.current
+    val backgroundArgb = MaterialTheme.colorScheme.background.toArgb()
+    val isDark = remember(backgroundArgb) {
+        val red = (backgroundArgb shr 16) and 0xFF
+        val green = (backgroundArgb shr 8) and 0xFF
+        val blue = backgroundArgb and 0xFF
+        (0.299 * red + 0.587 * green + 0.114 * blue) < 128.0
+    }
+    val logoAsset = if (isDark) "img/logo-white.png" else "img/logo-black.png"
+    val logoBitmap = remember(logoAsset) {
+        runCatching {
+            context.assets.open(logoAsset).use(BitmapFactory::decodeStream)
+        }.getOrNull()
+    }
+    val transition = rememberInfiniteTransition(label = "about-logo-background")
+    val pulse by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3600),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "logo-bg-pulse",
+    )
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(220.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(
+                Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+                    .background(
+                        Brush.sweepGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.secondary.copy(alpha = if (isDark) 0.52f else 0.24f),
+                                Color(0xFFFF7AB6).copy(alpha = if (isDark) 0.42f else 0.18f),
+                                Color(0xFF7CFFCB).copy(alpha = if (isDark) 0.38f else 0.16f),
+                                MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.30f else 0.12f),
+                                MaterialTheme.colorScheme.secondary.copy(alpha = if (isDark) 0.52f else 0.24f),
+                            ),
+                        ),
+                    ),
+            ) {
+                val c1 = Offset(size.width * (0.28f + 0.08f * pulse), size.height * 0.30f)
+                val c2 = Offset(size.width * 0.76f, size.height * (0.34f + 0.10f * (1f - pulse)))
+                val c3 = Offset(size.width * (0.54f - 0.07f * pulse), size.height * 0.72f)
+                drawCircle(Color(0xFF66D9FF).copy(alpha = if (isDark) 0.30f else 0.18f), size.minDimension * 0.34f, c1)
+                drawCircle(Color(0xFFFFD166).copy(alpha = if (isDark) 0.22f else 0.15f), size.minDimension * 0.30f, c2)
+                drawCircle(Color(0xFFFF6FD8).copy(alpha = if (isDark) 0.24f else 0.14f), size.minDimension * 0.28f, c3)
+            }
+            if (logoBitmap != null) {
+                Image(
+                    bitmap = logoBitmap.asImageBitmap(),
+                    contentDescription = "Lyra Code Logo",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(22.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            } else {
+                Icon(
+                    Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(72.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        Text(
+            "Lyra Code",
+            color = MaterialTheme.colorScheme.onBackground,
+            style = MaterialTheme.typography.headlineMedium,
         )
     }
 }
@@ -2673,11 +3024,8 @@ internal fun PromptSettingsScreen(settings: AppSettings) {
     fun visiblePresets() = settings.systemPromptPresets().filterNot { it.id == "roleplay" }
     var presets by remember { mutableStateOf(visiblePresets()) }
     var selectedId by remember { mutableStateOf(settings.selectedSystemPromptId.takeUnless { it == "roleplay" } ?: "default") }
-    var promptText by remember(selectedId, presets) {
-        mutableStateOf(presets.firstOrNull { it.id == selectedId }?.prompt.orEmpty())
-    }
+    var editing by remember { mutableStateOf<SystemPromptPreset?>(null) }
     var notice by remember { mutableStateOf("") }
-    val selectedPreset = presets.firstOrNull { it.id == selectedId }
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -2697,6 +3045,25 @@ internal fun PromptSettingsScreen(settings: AppSettings) {
                 )
             }
             KimiCardBox {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("提示词配置", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    Button(
+                        onClick = {
+                            editing = SystemPromptPreset(
+                                id = AppSettings.newId(),
+                                name = "自定义提示词",
+                                prompt = "",
+                                builtIn = false,
+                            )
+                        },
+                        shape = KimiPillShape,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("新增")
+                    }
+                }
                 presets.forEach { preset ->
                     Row(
                         Modifier
@@ -2710,41 +3077,54 @@ internal fun PromptSettingsScreen(settings: AppSettings) {
                             .padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(preset.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(26.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(preset.name, style = MaterialTheme.typography.titleSmall)
+                            val desc = preset.prompt.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+                            Text(
+                                if (preset.exampleConversation.isBlank()) desc else "$desc · 含示例对话",
+                                color = KimiMuted,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                         if (preset.id == selectedId) Icon(Icons.Default.Check, contentDescription = "已选择")
+                        IconButton(onClick = { editing = preset }) {
+                            Icon(Icons.Default.Edit, contentDescription = "编辑")
+                        }
                     }
                     if (preset != presets.last()) KimiDivider()
                 }
             }
-            KimiCardBox {
-                Text(selectedPreset?.name ?: "系统提示词", style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(
-                    value = promptText,
-                    onValueChange = { promptText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 12,
-                    maxLines = 24,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            settings.saveSystemPrompt(selectedId, promptText)
-                            presets = visiblePresets()
-                            notice = "提示词已保存"
-                        },
-                        shape = KimiPillShape,
-                    ) { Text("保存") }
-                    OutlinedButton(
-                        onClick = {
-                            promptText = settings.restoreSystemPrompt(selectedId)
-                            presets = visiblePresets()
-                            notice = "已恢复预设"
-                        },
-                        shape = KimiPillShape,
-                    ) { Text("恢复预设") }
-                }
-            }
             Spacer(Modifier.height(72.dp))
+        }
+        editing?.let { preset ->
+            PromptEditDialog(
+                preset = preset,
+                onDismiss = { editing = null },
+                onSave = { updated ->
+                    settings.saveSystemPromptConfig(updated)
+                    presets = visiblePresets()
+                    selectedId = settings.selectedSystemPromptId.takeUnless { it == "roleplay" } ?: "default"
+                    editing = null
+                    notice = "提示词已保存"
+                },
+                onRestore = {
+                    settings.restoreSystemPrompt(preset.id)
+                    presets = visiblePresets()
+                    editing = null
+                    notice = "已恢复预设"
+                },
+                onDelete = {
+                    settings.deleteSystemPromptConfig(preset.id)
+                    presets = visiblePresets()
+                    selectedId = settings.selectedSystemPromptId.takeUnless { it == "roleplay" } ?: "default"
+                    editing = null
+                    notice = "提示词已删除"
+                },
+            )
         }
         TransientNotice(
             message = notice,
@@ -2754,6 +3134,81 @@ internal fun PromptSettingsScreen(settings: AppSettings) {
             onDismiss = { notice = "" },
         )
     }
+}
+
+@Composable
+internal fun PromptEditDialog(
+    preset: SystemPromptPreset,
+    onDismiss: () -> Unit,
+    onSave: (SystemPromptPreset) -> Unit,
+    onRestore: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var name by remember(preset.id) { mutableStateOf(preset.name) }
+    var prompt by remember(preset.id) { mutableStateOf(preset.prompt) }
+    var example by remember(preset.id) { mutableStateOf(preset.exampleConversation) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (preset.builtIn) "编辑内置提示词" else "编辑自定义提示词") },
+        text = {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("提示词名称") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("提示词内容") },
+                    minLines = 8,
+                    maxLines = 16,
+                )
+                OutlinedTextField(
+                    value = example,
+                    onValueChange = { example = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("示例对话（可选）") },
+                    minLines = 3,
+                    maxLines = 8,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = prompt.isNotBlank(),
+                onClick = {
+                    onSave(
+                        preset.copy(
+                            name = name.trim().ifBlank { "自定义提示词" },
+                            prompt = prompt,
+                            exampleConversation = example,
+                        ),
+                    )
+                },
+                shape = KimiPillShape,
+            ) { Text("保存") }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (preset.builtIn) {
+                    TextButton(onClick = onRestore) { Text("恢复预设") }
+                } else {
+                    TextButton(onClick = onDelete) { Text("删除") }
+                }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
+    )
 }
 
 internal fun formatTime(timestamp: Long): String =

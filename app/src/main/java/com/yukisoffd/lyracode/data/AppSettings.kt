@@ -46,6 +46,8 @@ data class SystemPromptPreset(
     val id: String,
     val name: String,
     val prompt: String,
+    val exampleConversation: String = "",
+    val builtIn: Boolean = true,
 )
 
 data class SkillPack(
@@ -139,6 +141,29 @@ class AppSettings(context: Context) {
             .ifBlank { THEME_SYSTEM }
         set(value) = plainPrefs.edit().putString(KEY_THEME_MODE, value).apply()
 
+    var dynamicColorEnabled: Boolean
+        get() = plainPrefs.getBoolean(KEY_DYNAMIC_COLOR_ENABLED, false)
+        set(value) = plainPrefs.edit().putBoolean(KEY_DYNAMIC_COLOR_ENABLED, value).apply()
+
+    var fontScaleMode: String
+        get() = plainPrefs.getString(KEY_FONT_SCALE_MODE, FONT_SCALE_SYSTEM)
+            .orEmpty()
+            .ifBlank { FONT_SCALE_SYSTEM }
+        set(value) = plainPrefs.edit().putString(KEY_FONT_SCALE_MODE, value).apply()
+
+    var customFontScale: Float
+        get() = plainPrefs.getFloat(KEY_CUSTOM_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.35f)
+        set(value) = plainPrefs.edit().putFloat(KEY_CUSTOM_FONT_SCALE, value.coerceIn(0.85f, 1.35f)).apply()
+
+    fun effectiveFontScale(systemFontScale: Float): Float = when (fontScaleMode) {
+        FONT_SCALE_SMALL -> 0.9f
+        FONT_SCALE_NORMAL -> 1.0f
+        FONT_SCALE_LARGE -> 1.12f
+        FONT_SCALE_EXTRA_LARGE -> 1.25f
+        FONT_SCALE_CUSTOM -> customFontScale
+        else -> systemFontScale
+    }.coerceIn(0.85f, 1.35f)
+
     var userNickname: String
         get() = plainPrefs.getString(KEY_USER_NICKNAME, "用户").orEmpty().ifBlank { "用户" }
         set(value) = plainPrefs.edit().putString(KEY_USER_NICKNAME, value.trim().ifBlank { "用户" }).apply()
@@ -189,16 +214,41 @@ class AppSettings(context: Context) {
             .ifBlank { DEFAULT_SYSTEM_PROMPT_ID }
         set(value) = plainPrefs.edit().putString(KEY_SELECTED_SYSTEM_PROMPT_ID, value).apply()
 
+    var reasoningDepth: String
+        get() = plainPrefs.getString(KEY_REASONING_DEPTH, REASONING_AUTO)
+            .orEmpty()
+            .ifBlank { REASONING_AUTO }
+        set(value) = plainPrefs.edit().putString(
+            KEY_REASONING_DEPTH,
+            value.takeIf { it in reasoningDepthValues } ?: REASONING_AUTO,
+        ).apply()
+
     fun systemPromptPresets(): List<SystemPromptPreset> {
         val custom = customSystemPrompts()
-        return defaultSystemPromptPresets.map { preset ->
-            preset.copy(prompt = custom[preset.id] ?: preset.prompt)
+        val customConfigs = customSystemPromptConfigs()
+        val customById = customConfigs.associateBy { it.id }
+        val builtIns = defaultSystemPromptPresets.map { preset ->
+            val config = customById[preset.id]
+            preset.copy(
+                name = config?.name?.takeIf { it.isNotBlank() } ?: preset.name,
+                prompt = config?.prompt?.takeIf { it.isNotBlank() } ?: custom[preset.id] ?: preset.prompt,
+                exampleConversation = config?.exampleConversation.orEmpty(),
+                builtIn = true,
+            )
         }
+        return builtIns + customConfigs.filterNot { config -> builtIns.any { it.id == config.id } }
     }
 
     fun activeSystemPromptText(): String {
-        return systemPromptPresets().firstOrNull { it.id == selectedSystemPromptId }?.prompt
-            ?: defaultSystemPromptPresets.first().prompt
+        val preset = systemPromptPresets().firstOrNull { it.id == selectedSystemPromptId }
+            ?: defaultSystemPromptPresets.first()
+        return buildString {
+            append(preset.prompt)
+            if (preset.exampleConversation.isNotBlank()) {
+                append("\n\n以下是用户配置的示例对话风格，仅用于模仿语气和交互方式，不代表事实：\n")
+                append(preset.exampleConversation.trim())
+            }
+        }
     }
 
     fun saveSystemPrompt(presetId: String, prompt: String) {
@@ -207,10 +257,33 @@ class AppSettings(context: Context) {
         saveCustomSystemPrompts(custom)
     }
 
+    fun saveSystemPromptConfig(preset: SystemPromptPreset) {
+        val configs = customSystemPromptConfigs().toMutableList()
+        val clean = preset.copy(
+            id = preset.id.ifBlank { newId() },
+            name = preset.name.trim().ifBlank { "自定义提示词" },
+            prompt = preset.prompt.trim(),
+            exampleConversation = preset.exampleConversation.trim(),
+            builtIn = defaultSystemPromptPresets.any { it.id == preset.id },
+        )
+        val index = configs.indexOfFirst { it.id == clean.id }
+        if (index >= 0) configs[index] = clean else configs += clean
+        saveCustomSystemPromptConfigs(configs)
+        val custom = customSystemPrompts().toMutableMap()
+        if (clean.builtIn) custom[clean.id] = clean.prompt
+        saveCustomSystemPrompts(custom)
+    }
+
+    fun deleteSystemPromptConfig(id: String) {
+        saveCustomSystemPromptConfigs(customSystemPromptConfigs().filterNot { it.id == id })
+        if (selectedSystemPromptId == id) selectedSystemPromptId = DEFAULT_SYSTEM_PROMPT_ID
+    }
+
     fun restoreSystemPrompt(presetId: String): String {
         val custom = customSystemPrompts().toMutableMap()
         custom.remove(presetId)
         saveCustomSystemPrompts(custom)
+        saveCustomSystemPromptConfigs(customSystemPromptConfigs().filterNot { it.id == presetId })
         return defaultSystemPromptPresets.firstOrNull { it.id == presetId }?.prompt.orEmpty()
     }
 
@@ -227,6 +300,43 @@ class AppSettings(context: Context) {
         val root = JSONObject()
         prompts.forEach { (id, prompt) -> root.put(id, prompt) }
         plainPrefs.edit().putString(KEY_CUSTOM_SYSTEM_PROMPTS, root.toString()).apply()
+    }
+
+    private fun customSystemPromptConfigs(): List<SystemPromptPreset> {
+        val raw = plainPrefs.getString(KEY_SYSTEM_PROMPT_CONFIGS, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val id = item.optString("id").ifBlank { newId() }
+                    add(
+                        SystemPromptPreset(
+                            id = id,
+                            name = item.optString("name").ifBlank { "自定义提示词" },
+                            prompt = item.optString("prompt"),
+                            exampleConversation = item.optString("exampleConversation"),
+                            builtIn = defaultSystemPromptPresets.any { it.id == id },
+                        ),
+                    )
+                }
+            }.filter { it.prompt.isNotBlank() }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveCustomSystemPromptConfigs(prompts: List<SystemPromptPreset>) {
+        val array = JSONArray()
+        prompts.forEach { preset ->
+            array.put(
+                JSONObject()
+                    .put("id", preset.id)
+                    .put("name", preset.name)
+                    .put("prompt", preset.prompt)
+                    .put("exampleConversation", preset.exampleConversation),
+            )
+        }
+        plainPrefs.edit().putString(KEY_SYSTEM_PROMPT_CONFIGS, array.toString()).apply()
     }
 
     fun profiles(): List<ApiProfile> {
@@ -814,6 +924,9 @@ class AppSettings(context: Context) {
         return JSONObject()
             .put("schema", "lyra_settings_backup_v1")
             .put("themeMode", themeMode)
+            .put("dynamicColorEnabled", dynamicColorEnabled)
+            .put("fontScaleMode", fontScaleMode)
+            .put("customFontScale", customFontScale.toDouble())
             .put("userNickname", userNickname)
             .put("userAvatarPath", userAvatarPath.orEmpty())
             .put("hideTermuxPermissionHint", hideTermuxPermissionHint)
@@ -826,6 +939,8 @@ class AppSettings(context: Context) {
             })
             .put("selectedSystemPromptId", selectedSystemPromptId)
             .put("customSystemPrompts", JSONObject(plainPrefs.getString(KEY_CUSTOM_SYSTEM_PROMPTS, "{}").orEmpty().ifBlank { "{}" }))
+            .put("systemPromptConfigs", JSONArray(plainPrefs.getString(KEY_SYSTEM_PROMPT_CONFIGS, "[]").orEmpty().ifBlank { "[]" }))
+            .put("reasoningDepth", reasoningDepth)
             .put("selectedApiProfileId", selectedApiProfileId)
             .put("profiles", JSONArray().also { array ->
                 profiles().forEach { profile ->
@@ -888,6 +1003,9 @@ class AppSettings(context: Context) {
         val supplement = mode != "replace"
         val messages = mutableListOf<String>()
         root.optString("themeMode").takeIf { it.isNotBlank() }?.let { themeMode = it }
+        if (root.has("dynamicColorEnabled")) dynamicColorEnabled = root.optBoolean("dynamicColorEnabled")
+        root.optString("fontScaleMode").takeIf { it.isNotBlank() }?.let { fontScaleMode = it }
+        if (root.has("customFontScale")) customFontScale = root.optDouble("customFontScale", 1.0).toFloat()
         root.optString("userNickname").takeIf { it.isNotBlank() }?.let { userNickname = it }
         root.optString("userAvatarPath").takeIf { it.isNotBlank() }?.let { userAvatarPath = it }
         if (root.has("hideTermuxPermissionHint")) hideTermuxPermissionHint = root.optBoolean("hideTermuxPermissionHint")
@@ -900,25 +1018,37 @@ class AppSettings(context: Context) {
             messages += "沉浸扮演好感度 ${affections.length()} 项"
         }
         root.optString("selectedSystemPromptId").takeIf { it.isNotBlank() }?.let { selectedSystemPromptId = it }
-        root.optJSONObject("customSystemPrompts")?.let { plainPrefs.edit().putString(KEY_CUSTOM_SYSTEM_PROMPTS, it.toString()).apply() }
+        root.optJSONObject("customSystemPrompts")?.let { imported ->
+            val merged = if (supplement) JSONObject().also { output ->
+                customSystemPrompts().forEach { (id, prompt) -> output.put(id, prompt) }
+                imported.keys().asSequence().forEach { id -> output.put(id, imported.optString(id)) }
+            } else imported
+            plainPrefs.edit().putString(KEY_CUSTOM_SYSTEM_PROMPTS, merged.toString()).apply()
+        }
+        root.optJSONArray("systemPromptConfigs")?.let { array ->
+            val imported = parseSystemPromptConfigs(array)
+            saveCustomSystemPromptConfigs(if (supplement) mergeBy(customSystemPromptConfigs(), imported) { it.id } else imported)
+            messages += "系统提示词 ${imported.size} 项"
+        }
+        root.optString("reasoningDepth").takeIf { it in reasoningDepthValues }?.let { reasoningDepth = it }
         root.optJSONArray("profiles")?.let { array ->
             val imported = parseProfiles(array)
-            saveProfiles(if (supplement) mergeBy(profiles(), imported) { it.id } else imported.ifEmpty { profiles() }, root.optString("selectedApiProfileId").ifBlank { null })
+            saveProfiles(if (supplement) mergeProfiles(profiles(), imported) else imported.ifEmpty { profiles() }, root.optString("selectedApiProfileId").ifBlank { null })
             messages += "模型服务 ${imported.size} 项"
         }
         root.optJSONArray("mcpServers")?.let { array ->
             val imported = parseMcpServers(array)
-            saveMcpServers(if (supplement) mergeBy(mcpServers(), imported) { it.id } else imported)
+            saveMcpServers(if (supplement) mergeMcpServers(mcpServers(), imported) else imported)
             messages += "MCP ${imported.size} 项"
         }
         root.optJSONArray("sshServers")?.let { array ->
             val imported = parseSshServers(array)
-            saveSshServers(if (supplement) mergeBy(sshServers(), imported) { it.stableId } else imported)
+            saveSshServers(if (supplement) mergeSshServers(sshServers(), imported) else imported)
             messages += "SSH ${imported.size} 项"
         }
         root.optJSONArray("webDavServers")?.let { array ->
             val imported = parseWebDavServers(array)
-            saveWebDavServers(if (supplement) mergeBy(webDavServers(), imported) { it.stableId } else imported)
+            saveWebDavServers(if (supplement) mergeWebDavServers(webDavServers(), imported) else imported)
             messages += "WebDAV ${imported.size} 项"
         }
         return messages.ifEmpty { listOf("没有可导入的兼容配置") }.joinToString("；")
@@ -975,6 +1105,7 @@ class AppSettings(context: Context) {
     private fun parseMcpServers(array: JSONArray): List<McpServerConfig> = buildList {
         for (index in 0 until array.length()) {
             val item = array.optJSONObject(index) ?: continue
+            val tools = item.optJSONArray("tools") ?: JSONArray()
             add(
                 McpServerConfig(
                     id = item.optString("id").ifBlank { newId() },
@@ -985,7 +1116,19 @@ class AppSettings(context: Context) {
                     timeoutSeconds = item.optInt("timeoutSeconds", 30).coerceIn(5, 300),
                     enabled = item.optBoolean("enabled", true),
                     rawJson = item.optString("rawJson").ifBlank { "{}" },
-                    tools = emptyList(),
+                    tools = buildList {
+                        for (toolIndex in 0 until tools.length()) {
+                            val tool = tools.optJSONObject(toolIndex) ?: continue
+                            add(
+                                McpToolDefinition(
+                                    name = tool.optString("name"),
+                                    description = tool.optString("description"),
+                                    inputSchema = tool.optJSONObject("inputSchema")?.toString()
+                                        ?: tool.optString("inputSchema").ifBlank { "{}" },
+                                ),
+                            )
+                        }
+                    }.filter { it.name.isNotBlank() },
                 ),
             )
         }
@@ -1034,11 +1177,129 @@ class AppSettings(context: Context) {
         }
     }.filter { it.url.isNotBlank() }
 
+    private fun parseSystemPromptConfigs(array: JSONArray): List<SystemPromptPreset> = buildList {
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val prompt = item.optString("prompt")
+            if (prompt.isBlank()) continue
+            val id = item.optString("id").ifBlank { newId() }
+            add(
+                SystemPromptPreset(
+                    id = id,
+                    name = item.optString("name").ifBlank { "自定义提示词" },
+                    prompt = prompt,
+                    exampleConversation = item.optString("exampleConversation"),
+                    builtIn = defaultSystemPromptPresets.any { it.id == id },
+                ),
+            )
+        }
+    }
+
     private fun <T> mergeBy(existing: List<T>, imported: List<T>, key: (T) -> String): List<T> {
         val map = LinkedHashMap<String, T>()
         existing.forEach { map[key(it)] = it }
         imported.forEach { map[key(it)] = it }
         return map.values.toList()
+    }
+
+    private fun mergeProfiles(existing: List<ApiProfile>, imported: List<ApiProfile>): List<ApiProfile> {
+        val result = existing.toMutableList()
+        imported.forEach { incoming ->
+            val index = result.indexOfFirst { it.id == incoming.id || sameEndpointProfile(it, incoming) }
+            if (index >= 0) {
+                val current = result[index]
+                result[index] = incoming.copy(
+                    id = current.id,
+                    apiKey = incoming.apiKey.ifBlank { current.apiKey },
+                    savedModels = (incoming.savedModels + current.savedModels).filter { it.isNotBlank() }.distinct(),
+                )
+            } else {
+                result += incoming
+            }
+        }
+        return result
+    }
+
+    private fun mergeMcpServers(existing: List<McpServerConfig>, imported: List<McpServerConfig>): List<McpServerConfig> {
+        val result = existing.toMutableList()
+        imported.forEach { incoming ->
+            val index = result.indexOfFirst { it.id == incoming.id || sameMcpServer(it, incoming) }
+            if (index >= 0) {
+                val current = result[index]
+                val authKey = incoming.authKey.ifBlank { current.authKey }
+                result[index] = incoming.copy(
+                    id = current.id,
+                    authKey = authKey,
+                    rawJson = mergeMcpRawJson(current, incoming, authKey),
+                    tools = incoming.tools.ifEmpty { current.tools },
+                )
+            } else {
+                result += incoming
+            }
+        }
+        return result
+    }
+
+    private fun mergeSshServers(existing: List<SshServerConfig>, imported: List<SshServerConfig>): List<SshServerConfig> {
+        val result = existing.toMutableList()
+        imported.forEach { incoming ->
+            val index = result.indexOfFirst { it.id == incoming.id || it.stableId == incoming.stableId }
+            if (index >= 0) {
+                val current = result[index]
+                result[index] = incoming.copy(
+                    id = current.id,
+                    password = incoming.password.ifBlank { current.password },
+                    privateKey = incoming.privateKey.ifBlank { current.privateKey },
+                    passphrase = incoming.passphrase.ifBlank { current.passphrase },
+                )
+            } else {
+                result += incoming
+            }
+        }
+        return result
+    }
+
+    private fun mergeWebDavServers(existing: List<WebDavServerConfig>, imported: List<WebDavServerConfig>): List<WebDavServerConfig> {
+        val result = existing.toMutableList()
+        imported.forEach { incoming ->
+            val index = result.indexOfFirst { it.id == incoming.id || it.stableId == incoming.stableId }
+            if (index >= 0) {
+                val current = result[index]
+                result[index] = incoming.copy(
+                    id = current.id,
+                    password = incoming.password.ifBlank { current.password },
+                )
+            } else {
+                result += incoming
+            }
+        }
+        return result
+    }
+
+    private fun sameEndpointProfile(first: ApiProfile, second: ApiProfile): Boolean {
+        return first.name == second.name &&
+            first.apiFormat == second.apiFormat &&
+            first.baseUrl.trim().trimEnd('/') == second.baseUrl.trim().trimEnd('/')
+    }
+
+    private fun sameMcpServer(first: McpServerConfig, second: McpServerConfig): Boolean {
+        return first.url.trim().trimEnd('/') == second.url.trim().trimEnd('/') &&
+            first.transport == second.transport
+    }
+
+    private fun mergeMcpRawJson(current: McpServerConfig, incoming: McpServerConfig, authKey: String): String {
+        val incomingRaw = incoming.rawJson.ifBlank { "{}" }
+        if (authKey.isBlank()) return incomingRaw
+        val incomingHasAuth = runCatching {
+            val root = JSONObject(incomingRaw)
+            val node = root.optJSONObject("mcpServers")
+                ?.let { servers -> servers.keys().asSequence().firstOrNull()?.let { servers.optJSONObject(it) } }
+                ?: root
+            val headers = node.optJSONObject("headers") ?: root.optJSONObject("headers")
+            headers?.optString("Authorization").orEmpty().isNotBlank()
+        }.getOrDefault(false)
+        if (incomingHasAuth) return incomingRaw
+        return current.rawJson.takeIf { it.isNotBlank() && it != "{}" } ?: incomingRaw
     }
 
     @Suppress("DEPRECATION")
@@ -1068,6 +1329,9 @@ class AppSettings(context: Context) {
         private const val KEY_SELECTED_API_PROFILE_ID = "selected_api_profile_id"
         private const val KEY_DARK_MODE = "dark_mode"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
+        private const val KEY_FONT_SCALE_MODE = "font_scale_mode"
+        private const val KEY_CUSTOM_FONT_SCALE = "custom_font_scale"
         private const val KEY_USER_NICKNAME = "user_nickname"
         private const val KEY_USER_AVATAR_PATH = "user_avatar_path"
         private const val KEY_HIDE_TERMUX_PERMISSION_HINT = "hide_termux_permission_hint"
@@ -1077,6 +1341,8 @@ class AppSettings(context: Context) {
         private const val KEY_ENABLED_SKILLS = "enabled_skills"
         private const val KEY_SELECTED_SYSTEM_PROMPT_ID = "selected_system_prompt_id"
         private const val KEY_CUSTOM_SYSTEM_PROMPTS = "custom_system_prompts"
+        private const val KEY_SYSTEM_PROMPT_CONFIGS = "system_prompt_configs"
+        private const val KEY_REASONING_DEPTH = "reasoning_depth"
         private const val KEY_MCP_SERVERS = "mcp_servers"
         private const val KEY_SSH_SERVERS = "ssh_servers"
         private const val KEY_WEBDAV_SERVERS = "webdav_servers"
@@ -1101,6 +1367,18 @@ class AppSettings(context: Context) {
         const val THEME_SYSTEM = "system"
         const val THEME_LIGHT = "light"
         const val THEME_DARK = "dark"
+        const val FONT_SCALE_SYSTEM = "system"
+        const val FONT_SCALE_SMALL = "small"
+        const val FONT_SCALE_NORMAL = "normal"
+        const val FONT_SCALE_LARGE = "large"
+        const val FONT_SCALE_EXTRA_LARGE = "extra_large"
+        const val FONT_SCALE_CUSTOM = "custom"
+        const val REASONING_AUTO = "auto"
+        const val REASONING_LOW = "low"
+        const val REASONING_MEDIUM = "medium"
+        const val REASONING_HIGH = "high"
+        const val REASONING_ULTRA = "ultra"
+        val reasoningDepthValues = listOf(REASONING_AUTO, REASONING_LOW, REASONING_MEDIUM, REASONING_HIGH, REASONING_ULTRA)
         const val MCP_TRANSPORT_STREAMABLE_HTTP = "streamable_http"
         const val MCP_TRANSPORT_SSE = "sse"
         const val SSH_AUTH_PASSWORD = "password"

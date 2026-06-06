@@ -24,6 +24,9 @@ data class WebSearchResult(
     val title: String,
     val url: String,
     val snippet: String,
+    val source: String = "",
+    val score: Int = 0,
+    val reason: String = "",
 )
 
 data class WebPageResult(
@@ -50,25 +53,38 @@ class WebViewWebAgent(context: Context) {
             SearchEngine("百度", "https://www.baidu.com/s?wd=${Uri.encode(cleanQuery)}"),
         )
         var lastError = ""
-        val results = (withTimeoutOrNull(18_000L) { httpSearch(engines, cleanQuery, maxResults) } ?: emptyList())
+        val results = (withTimeoutOrNull(18_000L) { httpSearch(engines, cleanQuery, maxResults * 3) } ?: emptyList())
             .takeIf { it.isNotEmpty() }
             ?: engines.firstNotNullOfOrNull { engine ->
                 runCatching {
                     val json = loadAndEvaluate(url = engine.url, script = searchScript(maxResults), timeoutMs = 4_000L)
-                    parseSearchResults(json).takeIf { it.isNotEmpty() }
+                    rankSearchResults(cleanQuery, parseSearchResults(json), maxResults).takeIf { it.isNotEmpty() }
                 }.onFailure {
                     lastError = "${engine.name}: ${it::class.java.simpleName}: ${it.message.orEmpty()}"
                     Log.w(TAG, "WebView search failed: ${engine.url}", it)
                 }.getOrNull()
             }.orEmpty()
         if (results.isEmpty()) return "未找到可用搜索结果。lastError=$lastError"
-        return results.joinToString("\n\n") { result ->
-            "title: ${result.title}\nurl: ${result.url}\nsnippet: ${result.snippet.take(500)}"
-        }
+        return buildString {
+            appendLine("WEB_SEARCH_RESULTS schema=lyra_web_search_v2")
+            appendLine("query: $cleanQuery")
+            appendLine("guidance: 已按关键词匹配度、来源质量和垃圾/聚合页信号排序。优先读取高分、官方/原始/权威来源；低分结果仅作补充，不要把搜索摘要当最终事实。")
+            results.take(maxResults).forEachIndexed { index, result ->
+                appendLine()
+                appendLine("result_${index + 1}:")
+                appendLine("title: ${result.title}")
+                appendLine("url: ${result.url}")
+                appendLine("source: ${result.source}")
+                appendLine("score: ${result.score}")
+                appendLine("reason: ${result.reason}")
+                appendLine("snippet: ${result.snippet.take(500)}")
+            }
+        }.trim()
     }
 
     private suspend fun httpSearch(engines: List<SearchEngine>, query: String, limit: Int): List<WebSearchResult> = withContext(Dispatchers.IO) {
-        engines.firstNotNullOfOrNull { engine ->
+        val collected = mutableListOf<WebSearchResult>()
+        for (engine in engines) {
             runCatching {
                 val results = when (engine.name) {
                     "Bing" -> parseBingRss(httpGet("https://www.bing.com/search?q=${Uri.encode(query)}&format=rss"), limit)
@@ -77,17 +93,19 @@ class WebViewWebAgent(context: Context) {
                         .ifEmpty { parseLinksFromHtml(httpGet(engine.url), limit) }
                     else -> parseLinksFromHtml(httpGet(engine.url), limit)
                 }
-                results.takeIf { it.isNotEmpty() }
+                collected += results.map { it.copy(source = engine.name) }
             }.onFailure {
                 Log.w(TAG, "HTTP search failed: ${engine.name}", it)
-            }.getOrNull()
-        }.orEmpty()
+            }
+            if (collected.size >= limit) break
+        }
+        rankSearchResults(query, collected, limit)
     }
 
     suspend fun readPage(url: String): String {
         val cleanUrl = url.trim()
         require(cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) { "只支持 http/https 网页 URL" }
-        val page = runCatching {
+        var page = runCatching {
             val json = loadAndEvaluate(url = cleanUrl, script = pageScript(), timeoutMs = 10_000L)
             parsePage(json)
         }.onFailure {
@@ -96,7 +114,153 @@ class WebViewWebAgent(context: Context) {
             withTimeoutOrNull(8_000L) { httpReadFallback(cleanUrl) }
                 ?: WebPageResult("", cleanUrl, "网页读取超时。")
         }
-        return "title: ${page.title}\nurl: ${page.url}\n\n${page.text.ifBlank { "页面没有可读取文本。" }}"
+        if (pageReadStatus(page.text) != "readable") {
+            val fallback = withTimeoutOrNull(8_000L) { runCatching { httpReadFallback(cleanUrl) }.getOrNull() }
+            if (fallback != null && pageReadStatus(fallback.text) == "readable") page = fallback
+        }
+        val status = pageReadStatus(page.text)
+        val note = when (status) {
+            "blocked_or_dynamic" -> "note: 页面疑似有人机验证、访问防护、登录墙、403/Cloudflare 或正文与真人浏览不一致；不要把该页面作为唯一事实来源。"
+            "limited" -> "note: 页面可读文本较少，可能是动态渲染、摘要页或正文抽取不完整；建议读取其他来源交叉核对。"
+            else -> "note: 页面正文可读取。"
+        }
+        return "WEB_PAGE_READ_RESULT schema=lyra_web_page_v2\nstatus: $status\ntitle: ${page.title}\nurl: ${page.url}\n$note\n\n${page.text.ifBlank { "页面没有可读取文本。" }}"
+    }
+
+    private fun rankSearchResults(query: String, results: List<WebSearchResult>, limit: Int): List<WebSearchResult> {
+        val tokens = queryTokens(query)
+        val seen = mutableSetOf<String>()
+        return results.asSequence()
+            .mapNotNull { result ->
+                val url = canonicalSearchUrl(result.url)
+                if (url.isBlank() || isSearchEngineUrl(url)) return@mapNotNull null
+                if (!seen.add(url)) return@mapNotNull null
+                val title = result.title.trim().take(200)
+                if (title.length < 2) return@mapNotNull null
+                val scored = scoreSearchResult(tokens, result.copy(title = title, url = url))
+                result.copy(title = title, url = url, score = scored.first, reason = scored.second)
+            }
+            .sortedWith(compareByDescending<WebSearchResult> { it.score }.thenBy { it.title.length })
+            .take(limit)
+            .toList()
+    }
+
+    private fun scoreSearchResult(tokens: List<String>, result: WebSearchResult): Pair<Int, String> {
+        val host = runCatching { Uri.parse(result.url).host.orEmpty().lowercase() }.getOrDefault("")
+        val path = runCatching { Uri.parse(result.url).path.orEmpty().lowercase() }.getOrDefault("")
+        val haystack = "${result.title} ${result.snippet} $host $path".lowercase()
+        val matched = tokens.count { token -> token.length >= 2 && haystack.contains(token) }
+        var score = 20 + matched * 12
+        val reasons = mutableListOf<String>()
+        if (matched > 0) reasons += "关键词匹配 $matched/${tokens.size.coerceAtLeast(1)}"
+        if (hostQualityBonus(host, path) > 0) {
+            val bonus = hostQualityBonus(host, path)
+            score += bonus
+            reasons += "来源较可信 +$bonus"
+        }
+        val penalty = lowQualityPenalty(host, result.title, result.snippet)
+        if (penalty > 0) {
+            score -= penalty
+            reasons += "低质量/聚合信号 -$penalty"
+        }
+        if (tokens.isNotEmpty() && matched == 0) {
+            score -= 20
+            reasons += "标题摘要与关键词弱相关"
+        }
+        return score to reasons.ifEmpty { listOf("普通候选结果") }.joinToString("；")
+    }
+
+    private fun hostQualityBonus(host: String, path: String): Int {
+        return when {
+            host.endsWith(".gov") || host.contains(".gov.") -> 35
+            host.endsWith(".edu") || host.contains(".edu.") -> 25
+            host.contains("github.com") || host.contains("gitlab.com") -> 20
+            host.contains("developer.") || host.contains("docs.") || path.contains("/docs") || path.contains("/documentation") -> 20
+            host.contains("wikipedia.org") -> 12
+            else -> 0
+        }
+    }
+
+    private fun lowQualityPenalty(host: String, title: String, snippet: String): Int {
+        val text = "$title $snippet".lowercase()
+        var penalty = 0
+        val noisyHosts = listOf(
+            "baijiahao.baidu.com",
+            "m.sm.cn",
+            "so.com",
+            "pinterest.",
+            "facebook.com",
+            "instagram.com",
+            "tiktok.com",
+            "x.com",
+            "twitter.com",
+        )
+        if (noisyHosts.any { host.contains(it) }) penalty += 35
+        if (listOf("广告", "推广", "最新地址", "转载", "采集", "seo", "站长").any { text.contains(it) }) penalty += 18
+        if (title.length > 90 && snippet.isBlank()) penalty += 10
+        return penalty
+    }
+
+    private fun queryTokens(query: String): List<String> {
+        val clean = query.lowercase()
+        val tokens = Regex("""[a-z0-9][a-z0-9_.+-]{1,}|[\u4E00-\u9FFF]{2,}""")
+            .findAll(clean)
+            .map { it.value.trim() }
+            .filter { it.length >= 2 }
+            .distinct()
+            .toMutableList()
+        clean.split(Regex("""[\s,，。；;:：/\\|"'“”‘’()（）\[\]{}<>《》]+"""))
+            .map { it.trim() }
+            .filter { it.length >= 2 }
+            .forEach { if (it !in tokens) tokens += it }
+        Regex("""[\u4E00-\u9FFF]{4,}""").findAll(clean).forEach { match ->
+            val value = match.value
+            value.windowed(2, 1).take(8).forEach { if (it !in tokens) tokens += it }
+        }
+        return tokens.take(12)
+    }
+
+    private fun canonicalSearchUrl(url: String): String {
+        val parsed = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return ""
+        val scheme = parsed.scheme.orEmpty().lowercase()
+        if (scheme != "http" && scheme != "https") return ""
+        val host = parsed.host.orEmpty().lowercase()
+        if (host.isBlank()) return ""
+        val path = parsed.path.orEmpty().ifBlank { "/" }
+        val query = parsed.queryParameterNames
+            .filterNot { it.lowercase() in TRACKING_QUERY_PARAMS }
+            .sorted()
+            .joinToString("&") { name ->
+                val value = parsed.getQueryParameter(name).orEmpty()
+                "${Uri.encode(name)}=${Uri.encode(value)}"
+            }
+        return buildString {
+            append(scheme).append("://").append(host).append(path)
+            if (query.isNotBlank()) append("?").append(query)
+        }.trimEnd('/')
+    }
+
+    private fun pageReadStatus(text: String): String {
+        val clean = text.trim()
+        val lower = clean.lowercase()
+        val blockedSignals = listOf(
+            "access denied",
+            "forbidden",
+            "403",
+            "cloudflare",
+            "just a moment",
+            "verify you are human",
+            "enable javascript",
+            "请完成安全验证",
+            "人机验证",
+            "登录后查看",
+            "网页读取超时",
+        )
+        return when {
+            blockedSignals.any { lower.contains(it) } -> "blocked_or_dynamic"
+            clean.length < 600 -> "limited"
+            else -> "readable"
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -335,6 +499,17 @@ class WebViewWebAgent(context: Context) {
 
     companion object {
         private const val TAG = "LyraWebAgent"
+        private val TRACKING_QUERY_PARAMS = setOf(
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_term",
+            "utm_content",
+            "spm",
+            "from",
+            "fbclid",
+            "gclid",
+        )
     }
 }
 
