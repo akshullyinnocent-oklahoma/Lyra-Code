@@ -24,8 +24,6 @@
 
 Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对话、文件工具、命令执行、联网搜索、MCP、SSH、WebDAV、数据备份和 Skills 能力包整合到移动端，让手机也能承担编程、写作、检索、远程维护和自动化任务。
 
-> Lyra Code 仍处于快速迭代阶段。AI 工具调用、远程命令、文件修改和备份恢复都可能影响数据安全，请在使用前仔细审查。
-
 ## 界面预览
 
 | AI 对话 | 设置 | Agent 工具 |
@@ -62,7 +60,7 @@ Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对
 ### Skills 能力包
 
 - 支持从文件导入 zip 或单个 `SKILL.md`。
-- 支持从 GitHub / Gitee / GitLab 仓库链接导入，并保留仓库内脚本、说明和资源文件。
+- 支持从 GitHub / Gitee / GitLab 仓库链接导入。
 - 支持手动编辑 `SKILL.md` 创建 Skill。
 - Agent 会先读取 `name` / `description` 判断是否相关，再按需读取 Skill 内部文件，避免上下文爆炸。
 

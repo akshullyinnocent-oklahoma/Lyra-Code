@@ -24,8 +24,6 @@
 
 Lyra Code is an Android-first local AI Agent app. It brings model chat, file tools, command execution, web search, MCP, SSH, WebDAV, backups, and Skills into a mobile workflow, so an Android device can handle coding, writing, research, remote maintenance, and automation tasks.
 
-> Lyra Code is under active development. AI tool calls, remote commands, file edits, and backup imports can affect your data. Review actions carefully before allowing them.
-
 ## Screenshots
 
 | Chat | Settings | Agent Tools |
@@ -62,7 +60,7 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 ### Skills
 
 - Import zip packages or a single `SKILL.md` file.
-- Import a full GitHub / Gitee / GitLab repository and keep scripts, docs, assets, and nested files.
+- Import a full GitHub / Gitee / GitLab repository.
 - Manually create a Skill by editing `SKILL.md`.
 - The Agent first reads `name` / `description` to judge relevance, then reads internal files on demand to avoid context bloat.
 
