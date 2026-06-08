@@ -1,6 +1,12 @@
 package com.yukisoffd.lyracode
 
+import android.content.ContentValues
+import android.content.Context
 import android.graphics.Rect
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -25,7 +31,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +59,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -89,6 +102,7 @@ import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes
 import org.intellij.markdown.parser.MarkdownParser
 import ru.noties.jlatexmath.JLatexMathDrawable
+import java.io.File
 import kotlin.math.max
 
 private val richMarkdownFlavour by lazy {
@@ -308,25 +322,57 @@ private fun RichListItem(node: ASTNode, content: String, marker: String, level: 
 
 @Composable
 private fun RichCodeFence(node: ASTNode, content: String) {
+    val raw = node.getTextInNode(content)
+    val firstLine = raw.lineSequence().firstOrNull().orEmpty()
+    val language = firstLine.removePrefix("```").trim().substringBefore(' ').ifBlank { "text" }
     val start = node.children.firstOrNull { it.type == MarkdownTokenTypes.CODE_FENCE_CONTENT }?.startOffset ?: return
     val end = node.children.lastOrNull { it.type == MarkdownTokenTypes.CODE_FENCE_CONTENT }?.endOffset ?: start
-    RichCodeBlock(content.substring(start, end).trimEnd())
+    RichCodeBlock(content.substring(start, end).trimEnd(), language)
 }
 
 @Composable
-private fun RichCodeBlock(code: String) {
-    Text(
-        text = code,
+private fun RichCodeBlock(code: String, language: String = "text") {
+    val clipboard = LocalClipboardManager.current
+    val colorScheme = MaterialTheme.colorScheme
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f))
-            .padding(12.dp)
-            .horizontalScroll(rememberScrollState()),
-        color = MaterialTheme.colorScheme.onSurface,
-        fontFamily = FontFamily.Monospace,
-        style = MaterialTheme.typography.bodySmall,
-    )
+            .background(colorScheme.surfaceVariant.copy(alpha = 0.50f))
+            .border(BorderStroke(0.5.dp, colorScheme.outlineVariant.copy(alpha = 0.45f)), RoundedCornerShape(10.dp)),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(colorScheme.surfaceVariant.copy(alpha = 0.66f))
+                .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                language.ifBlank { "text" },
+                modifier = Modifier.weight(1f),
+                color = colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            IconButton(
+                onClick = { clipboard.setText(AnnotatedString(code)) },
+                modifier = Modifier.size(34.dp),
+            ) {
+                Icon(Icons.Default.ContentCopy, contentDescription = "复制代码", modifier = Modifier.size(18.dp))
+            }
+        }
+        Text(
+            text = remember(code, language, colorScheme) { highlightedCode(code, language, colorScheme) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(12.dp),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
 }
 
 @Composable
@@ -339,6 +385,27 @@ private fun RichTable(node: ASTNode, content: String) {
     }
     val columnCount = max(headerCells.size, rowCells.maxOfOrNull { it.size } ?: 0)
     if (columnCount == 0) return
+    val context = LocalContext.current
+    val csv = remember(headerCells, rowCells, columnCount) { buildCsv(headerCells, rowCells, columnCount) }
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        IconButton(
+            onClick = {
+                val name = "lyra_table_${System.currentTimeMillis()}.csv"
+                val result = saveCsvToDownloads(context, name, csv)
+                Toast.makeText(
+                    context,
+                    result.fold({ "已导出到 Download/$name" }, { "导出失败: ${it.message.orEmpty()}" }),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            },
+            modifier = Modifier.size(36.dp),
+        ) {
+            Icon(Icons.Default.FileDownload, contentDescription = "导出 CSV", modifier = Modifier.size(19.dp))
+        }
+    }
     RichDataTable(
         headers = List(columnCount) { column ->
             { RichTableCell(headerCells.getOrNull(column).orEmpty(), header = true) }
@@ -691,6 +758,89 @@ private fun resolvedFontSize(style: TextStyle, override: TextUnit = TextUnit.Uns
     if (override.isSpecified) return override
     if (style.fontSize.isSpecified) return style.fontSize
     return 16.sp
+}
+
+private fun highlightedCode(
+    code: String,
+    language: String,
+    colorScheme: androidx.compose.material3.ColorScheme,
+): AnnotatedString = buildAnnotatedString {
+    val normalized = language.lowercase()
+    append(code)
+    if (code.isBlank()) return@buildAnnotatedString
+    when {
+        normalized in setOf("json", "jsonc") -> {
+            Regex(""""(?:\\.|[^"\\])*"""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.primary), it.range.first, it.range.last + 1)
+            }
+            Regex("""\b(true|false|null)\b""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.tertiary), it.range.first, it.range.last + 1)
+            }
+            Regex("""(?<![\w.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?![\w.])""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.secondary), it.range.first, it.range.last + 1)
+            }
+        }
+        normalized in setOf("kt", "kotlin", "java", "js", "javascript", "ts", "typescript", "py", "python", "go", "rs", "rust", "c", "cpp", "swift") -> {
+            val keywords = when (normalized) {
+                "py", "python" -> "False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield"
+                "js", "javascript", "ts", "typescript" -> "async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|finally|for|from|function|if|import|in|instanceof|let|new|null|return|super|switch|this|throw|try|typeof|undefined|var|void|while|with|yield"
+                else -> "abstract|as|break|case|catch|class|const|continue|data|default|do|else|enum|expect|export|extends|false|finally|for|fun|if|import|in|inline|interface|internal|is|lateinit|new|null|object|open|override|package|private|protected|public|return|sealed|static|super|switch|this|throw|true|try|typealias|val|var|when|while"
+            }
+            Regex("""//.*|#.*|/\*[\s\S]*?\*/""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.outline), it.range.first, it.range.last + 1)
+            }
+            Regex(""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.primary), it.range.first, it.range.last + 1)
+            }
+            Regex("""\b($keywords)\b""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.tertiary, fontWeight = FontWeight.SemiBold), it.range.first, it.range.last + 1)
+            }
+        }
+        normalized in setOf("sh", "bash", "shell", "zsh", "powershell", "ps1") -> {
+            Regex("""(^|\s)(sudo|cd|ls|cat|grep|find|git|npm|python|python3|pip|chmod|chown|mkdir|rm|cp|mv|echo|export|set)\b""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.tertiary, fontWeight = FontWeight.SemiBold), it.range.first, it.range.last + 1)
+            }
+            Regex(""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'""").findAll(code).forEach {
+                addStyle(SpanStyle(color = colorScheme.primary), it.range.first, it.range.last + 1)
+            }
+        }
+    }
+}
+
+private fun buildCsv(headers: List<String>, rows: List<List<String>>, columnCount: Int): String {
+    val lines = mutableListOf<List<String>>()
+    if (headers.any { it.isNotBlank() }) {
+        lines += List(columnCount) { headers.getOrNull(it).orEmpty() }
+    }
+    rows.forEach { row ->
+        lines += List(columnCount) { row.getOrNull(it).orEmpty() }
+    }
+    return lines.joinToString("\n") { cells -> cells.joinToString(",") { csvCell(it) } }
+}
+
+private fun csvCell(value: String): String {
+    val clean = value.replace("\r\n", "\n").replace('\r', '\n')
+    val escaped = clean.replace("\"", "\"\"")
+    return if (escaped.any { it == ',' || it == '"' || it == '\n' }) "\"$escaped\"" else escaped
+}
+
+private fun saveCsvToDownloads(context: Context, fileName: String, csv: String): Result<Unit> = runCatching {
+    val bytes = csv.toByteArray(Charsets.UTF_8)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "text/csv")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+        }
+        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("无法创建下载文件")
+        context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            ?: error("无法写入下载文件")
+    } else {
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!dir.exists()) dir.mkdirs()
+        File(dir, fileName).writeBytes(bytes)
+    }
 }
 
 private fun ASTNode.getTextInNode(text: String): String {

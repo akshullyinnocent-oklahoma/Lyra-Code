@@ -616,7 +616,7 @@ internal fun RoleplayChatScreen(
                 }
             }
             Card(
-                Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth().imePadding(),
                 shape = RoundedCornerShape(28.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
             ) {
@@ -1616,12 +1616,6 @@ internal fun MessageCard(message: ChatRecord, selectionResetKey: Int = 0) {
                     modifier = Modifier.weight(1f),
                 )
                 if (message.model.isNotBlank()) Text(message.model, style = MaterialTheme.typography.labelSmall)
-                IconButton(
-                    onClick = { clipboard.setText(AnnotatedString(message.content)) },
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "复制", modifier = Modifier.size(18.dp))
-                }
             }
             if (message.thinking.isNotBlank()) {
                 CollapsedStatusLine(
@@ -1655,6 +1649,20 @@ internal fun MessageCard(message: ChatRecord, selectionResetKey: Int = 0) {
                     }
                 } else if (message.role == "assistant") {
                     Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if ((message.role == "user" || message.role == "assistant") && message.content.isNotBlank()) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(
+                        onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "复制整条消息", modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }
