@@ -391,7 +391,11 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                     if (item.process.isNotEmpty()) {
                         AgentProcessSummary(item.process, selectionResetKey)
                     } else if (item.message != null) {
-                        MessageCard(item.message, selectionResetKey)
+                        MessageCard(
+                            message = item.message,
+                            selectionResetKey = selectionResetKey,
+                            onEditAndRegenerate = controller::editAndRegenerateUserMessage,
+                        )
                     }
                 }
                 if (isInterrupted && messageSnapshot.isNotEmpty()) {
@@ -1086,7 +1090,7 @@ internal fun ActionSheetTile(icon: ImageVector, title: String, modifier: Modifie
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp))
+        Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(10.dp))
         Text(title, style = MaterialTheme.typography.titleMedium)
     }
@@ -1109,7 +1113,7 @@ internal fun ActionSheetRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp))
+        Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp), tint = MaterialTheme.colorScheme.primary)
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             if (subtitle.isNotBlank()) {
@@ -1258,7 +1262,7 @@ internal data class ChatRenderItem(
 internal fun chatRenderItems(messages: List<ChatRecord>): List<ChatRenderItem> {
     val result = mutableListOf<ChatRenderItem>()
     val processBuffer = mutableListOf<ChatRecord>()
-    fun flushProcess(beforeId: Long) {
+    fun flushProcess() {
         if (processBuffer.isNotEmpty()) {
             val group = processBuffer.toList()
             result += ChatRenderItem("process-${group.first().id}", process = group)
@@ -1269,12 +1273,19 @@ internal fun chatRenderItems(messages: List<ChatRecord>): List<ChatRenderItem> {
         if (isInternalProcessMessage(message)) {
             processBuffer += message
         } else {
-            if (message.role == "assistant") flushProcess(message.id)
-            if (message.role == "user") flushProcess(message.id)
-            result += ChatRenderItem("message-${message.id}", message = message)
+            if (message.role == "assistant") {
+                if (message.thinking.isNotBlank()) {
+                    processBuffer += message.copy(id = -message.id, content = "")
+                }
+                flushProcess()
+                result += ChatRenderItem("message-${message.id}", message = message.copy(thinking = ""))
+            } else {
+                if (message.role == "user") flushProcess()
+                result += ChatRenderItem("message-${message.id}", message = message)
+            }
         }
     }
-    flushProcess(Long.MAX_VALUE)
+    flushProcess()
     return result
 }
 
@@ -1297,7 +1308,7 @@ internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: 
             )
             AnimatedVisibility(expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    messages.forEach { MessageCard(it, selectionResetKey) }
+                    messages.forEach { MessageCard(it, selectionResetKey, inProcessRecord = true) }
                 }
             }
         }
@@ -1584,88 +1595,195 @@ internal fun ModelToolbar(controller: ChatController) {
 }
 
 @Composable
-internal fun MessageCard(message: ChatRecord, selectionResetKey: Int = 0) {
+@OptIn(ExperimentalFoundationApi::class)
+internal fun MessageCard(
+    message: ChatRecord,
+    selectionResetKey: Int = 0,
+    inProcessRecord: Boolean = false,
+    onEditAndRegenerate: ((Long, String) -> Unit)? = null,
+) {
     val visibleContent = displayMessageContent(message)
     val mediaPreviews = remember(message.content) { uploadedMediaPreviews(message.content) }
     val container = when (message.role) {
-        "user" -> MaterialTheme.colorScheme.surfaceVariant
+        "user" -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
         "tool" -> MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
         else -> Color.Transparent
+    }
+    val contentColor = when (message.role) {
+        "user" -> MaterialTheme.colorScheme.onPrimaryContainer
+        else -> MaterialTheme.colorScheme.onSurface
     }
     val clipboard = LocalClipboardManager.current
     var showThinking by rememberSaveable(message.id) { mutableStateOf(false) }
     var showToolResult by rememberSaveable(message.id) { mutableStateOf(false) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var selectable by rememberSaveable(message.id) { mutableStateOf(false) }
+    var editDialogOpen by rememberSaveable(message.id) { mutableStateOf(false) }
+    var editText by rememberSaveable(message.id) { mutableStateOf(message.content) }
     val isUser = message.role == "user"
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = container),
-            shape = if (isUser) RoundedCornerShape(20.dp) else RoundedCornerShape(18.dp),
-            border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
-            modifier = if (isUser) Modifier.widthIn(max = 330.dp) else Modifier.fillMaxWidth(),
-        ) {
-        Column(Modifier.padding(if (isUser) 14.dp else 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when (message.role) {
-                        "assistant" -> "Lyra"
-                        "tool" -> "工具结果"
-                        else -> "你"
+    if (editDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { editDialogOpen = false },
+            title = { Text("编辑并重新生成") },
+            text = {
+                OutlinedTextField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp),
+                    minLines = 5,
+                    maxLines = 12,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        editDialogOpen = false
+                        onEditAndRegenerate?.invoke(message.id, editText)
                     },
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                if (message.model.isNotBlank()) Text(message.model, style = MaterialTheme.typography.labelSmall)
-            }
-            if (message.thinking.isNotBlank()) {
-                CollapsedStatusLine(
-                    text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
-                    expanded = showThinking,
-                    onClick = { showThinking = !showThinking },
-                )
-                AnimatedVisibility(showThinking) {
-                    key(selectionResetKey) {
-                        SelectionContainer {
-                            Text(message.thinking, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
-                        }
-                    }
-                }
-            }
-            if (message.role == "tool") {
-                ToolResultContent(
-                    content = message.content,
-                    expanded = showToolResult,
-                    onToggle = { showToolResult = !showToolResult },
-                )
-            } else {
-                if (isUser && mediaPreviews.isNotEmpty()) {
-                    UploadedMediaGrid(mediaPreviews)
-                }
-                if (visibleContent.isNotBlank()) {
-                    key(selectionResetKey) {
-                        SelectionContainer {
-                            RichMarkdownContent(visibleContent)
-                        }
-                    }
-                } else if (message.role == "assistant") {
-                    Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            if ((message.role == "user" || message.role == "assistant") && message.content.isNotBlank()) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(
-                        onClick = { clipboard.setText(AnnotatedString(message.content)) },
-                        modifier = Modifier.size(34.dp),
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "复制整条消息", modifier = Modifier.size(18.dp))
+                    Text("重新生成")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editDialogOpen = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+        Box {
+            val cardModifier = if (isUser) {
+                Modifier
+                    .widthIn(max = 320.dp)
+                    .combinedClickable(
+                        onClick = {},
+                        onLongClick = {
+                            editText = message.content
+                            menuExpanded = true
+                        },
+                    )
+            } else {
+                Modifier.fillMaxWidth()
+            }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = container),
+                shape = if (isUser) RoundedCornerShape(22.dp) else RoundedCornerShape(18.dp),
+                border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
+                modifier = cardModifier,
+            ) {
+                Column(
+                    Modifier.padding(
+                        horizontal = if (isUser) 16.dp else 6.dp,
+                        vertical = if (isUser) 9.dp else 6.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (!isUser && message.role != "assistant") {
+                        Text("工具结果", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+                    }
+                    if (message.thinking.isNotBlank()) {
+                        CollapsedStatusLine(
+                            text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
+                            expanded = showThinking,
+                            onClick = { showThinking = !showThinking },
+                        )
+                        AnimatedVisibility(showThinking) {
+                            key(selectionResetKey) {
+                                SelectionContainer {
+                                    Text(
+                                        message.thinking,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = contentColor,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (message.role == "tool") {
+                        ToolResultContent(
+                            content = message.content,
+                            expanded = showToolResult,
+                            onToggle = { showToolResult = !showToolResult },
+                        )
+                    } else {
+                        if (isUser && mediaPreviews.isNotEmpty()) {
+                            UploadedMediaGrid(mediaPreviews)
+                        }
+                        if (visibleContent.isNotBlank()) {
+                            key(selectionResetKey) {
+                                if (isUser) {
+                                    if (selectable) {
+                                        SelectionContainer {
+                                            Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                        }
+                                    } else {
+                                        Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                    }
+                                } else {
+                                    SelectionContainer {
+                                        RichMarkdownContent(visibleContent)
+                                    }
+                                }
+                            }
+                            if (message.role == "assistant" && !inProcessRecord) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    IconButton(
+                                        onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                                        modifier = Modifier.size(36.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "复制",
+                                            tint = KimiMuted,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (message.role == "assistant" && !inProcessRecord) {
+                            Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
-        }
+            if (isUser) DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("复制") },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                    onClick = {
+                        clipboard.setText(AnnotatedString(message.content))
+                        menuExpanded = false
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("选择文本") },
+                    leadingIcon = { Icon(Icons.Default.TextFields, contentDescription = null) },
+                    onClick = {
+                        selectable = true
+                        menuExpanded = false
+                    },
+                )
+                if (isUser && onEditAndRegenerate != null) {
+                    DropdownMenuItem(
+                        text = { Text("修改并重新生成") },
+                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                        onClick = {
+                            editText = message.content
+                            menuExpanded = false
+                            editDialogOpen = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("重新生成") },
+                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onEditAndRegenerate(message.id, message.content)
+                        },
+                    )
+                }
+            }
         }
     }
 }

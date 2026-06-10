@@ -88,6 +88,8 @@ class ChatController(
         scope.cancel()
     }
 
+    fun usageStore(): ConversationStore = conversationStore
+
     fun reloadProfiles() {
         profiles.clear()
         profiles.addAll(settings.profiles())
@@ -268,6 +270,32 @@ class ChatController(
         val model = activeModel.value.ifBlank { profile.selectedModel }
         jobs[conversationId] = scope.launch {
             status.value = "继续运行"
+            agent.continueConversation(conversationId, profile, model) {
+                withContext(Dispatchers.Main) {
+                    applyChatUpdate(it)
+                    status.value = it.status
+                }
+            }
+            reloadMessages()
+            reloadConversations()
+            markConversationFinished(conversationId)
+        }
+    }
+
+    fun editAndRegenerateUserMessage(messageId: Long, newContent: String) {
+        val conversationId = activeConversationId.value.takeIf { it > 0 } ?: return
+        if (jobs[conversationId]?.isActive == true) return
+        val message = conversationStore.message(messageId) ?: return
+        if (message.conversationId != conversationId || message.role != "user") return
+        val content = newContent.trim().ifBlank { message.content }
+        conversationStore.updateMessage(messageId, content = content, thinking = "")
+        conversationStore.deleteMessagesAfter(conversationId, messageId)
+        reloadMessages()
+        reloadConversations()
+        val profile = currentProfile()
+        val model = activeModel.value.ifBlank { profile.selectedModel }
+        jobs[conversationId] = scope.launch {
+            status.value = "重新生成"
             agent.continueConversation(conversationId, profile, model) {
                 withContext(Dispatchers.Main) {
                     applyChatUpdate(it)

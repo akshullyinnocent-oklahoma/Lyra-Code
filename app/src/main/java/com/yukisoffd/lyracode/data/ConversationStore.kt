@@ -293,6 +293,41 @@ class ConversationStore(context: Context) : SQLiteOpenHelper(
         conversationId?.let { setConversationMeta(it) }
     }
 
+    fun message(id: Long): ChatMessage? {
+        return readableDatabase.query(
+            "messages",
+            arrayOf("id", "conversation_id", "role", "content", "thinking", "profile_id", "model", "tool_call_id", "raw_json", "created_at"),
+            "id=?",
+            arrayOf(id.toString()),
+            null,
+            null,
+            null,
+        ).use {
+            if (!it.moveToFirst()) return null
+            ChatMessage(
+                id = it.getLong(0),
+                conversationId = it.getLong(1),
+                role = it.getString(2),
+                content = it.getString(3),
+                thinking = it.getString(4),
+                profileId = it.getString(5),
+                model = it.getString(6),
+                toolCallId = if (it.isNull(7)) null else it.getString(7),
+                rawJson = if (it.isNull(8)) null else it.getString(8),
+                createdAt = it.getLong(9),
+            )
+        }
+    }
+
+    fun deleteMessagesAfter(conversationId: Long, messageId: Long) {
+        writableDatabase.delete(
+            "messages",
+            "conversation_id=? AND id>?",
+            arrayOf(conversationId.toString(), messageId.toString()),
+        )
+        setConversationMeta(conversationId)
+    }
+
     fun messages(conversationId: Long): List<ChatMessage> {
         val cursor = readableDatabase.query(
             "messages",

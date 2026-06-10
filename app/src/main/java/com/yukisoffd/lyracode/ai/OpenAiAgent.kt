@@ -372,7 +372,8 @@ class OpenAiAgent(
         applyProviderCacheHints(requestJson, profile, model)
         applyReasoningDepthHint(requestJson, profile, model)
 
-        responseCache?.get(profile, requestJson)?.let { cached ->
+        val allowLocalResponseCache = !isFreshSingleUserTurn(conversationId, excludeMessageId)
+        if (allowLocalResponseCache) responseCache?.get(profile, requestJson)?.let { cached ->
             val result = cached.toStreamingResult()
             Log.d(
                 AGENT_TAG,
@@ -446,16 +447,24 @@ class OpenAiAgent(
         if (calls.isNotEmpty()) {
             message.put("tool_calls", JSONArray().apply { calls.forEach { put(it.toJson()) } })
         }
-        responseCache?.put(
-            profile,
-            requestJson,
-            AiCachedResponse(
-                content = cleanContent,
-                thinking = cleanThinking,
-                rawMessage = message.toString(),
-            ),
-        )
+        if (allowLocalResponseCache) {
+            responseCache?.put(
+                profile,
+                requestJson,
+                AiCachedResponse(
+                    content = cleanContent,
+                    thinking = cleanThinking,
+                    rawMessage = message.toString(),
+                ),
+            )
+        }
         return StreamingResult(cleanContent, cleanThinking, message, calls)
+    }
+
+    private fun isFreshSingleUserTurn(conversationId: Long, excludeMessageId: Long): Boolean {
+        val history = conversationStore.messages(conversationId).filter { it.id != excludeMessageId }
+        return history.count { it.role == "user" } == 1 &&
+            history.none { it.role == "assistant" || it.role == "tool" }
     }
 
     private fun applyReasoningDepthHint(requestJson: JSONObject, profile: ApiProfile, model: String) {

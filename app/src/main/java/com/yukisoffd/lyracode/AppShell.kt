@@ -224,7 +224,7 @@ internal fun LyraCodeApp(
     onFontScaleModeChange: (String) -> Unit,
     onCustomFontScaleChange: (Float) -> Unit,
 ) {
-    val pages = listOf("AI 对话", "日志", "设置")
+    val pages = listOf("AI 对话", "日志", "设置", "统计")
     var selectedPage by rememberSaveable { mutableIntStateOf(0) }
     val safeSelectedPage = selectedPage.coerceIn(0, pages.lastIndex)
     val controllerStatus = controller.status.value
@@ -498,6 +498,7 @@ internal fun LyraCodeApp(
                                 skillsRevision++
                             },
                         )
+                        3 -> UsageStatsScreen(controller)
                     }
                 }
                 TransientNotice(
@@ -613,7 +614,7 @@ internal fun KimiDrawerContent(
                             0 -> Icons.Default.Chat
                             1 -> Icons.Default.ReceiptLong
                             2 -> Icons.Default.Settings
-                            3 -> Icons.Default.EditNote
+                            3 -> Icons.Default.Analytics
                             4 -> Icons.Default.School
                             5 -> Icons.Default.Description
                             else -> Icons.Default.Info

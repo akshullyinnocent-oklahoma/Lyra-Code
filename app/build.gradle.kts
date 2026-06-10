@@ -15,8 +15,8 @@ android {
         applicationId = "com.yukisoffd.lyracode"
         minSdk = 26
         targetSdk = 36
-        versionCode = 33
-        versionName = "2.1.5"
+        versionCode = 34
+        versionName = "2.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField(
@@ -51,6 +51,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    sourceSets {
+        getByName("main") {
+            assets.srcDirs(rootProject.file("deepseek_v3_tokenizer/deepseek_v3_tokenizer"))
+        }
     }
 }
 
