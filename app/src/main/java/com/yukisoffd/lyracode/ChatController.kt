@@ -166,6 +166,13 @@ class ChatController(
         if (!isRoleplayMode() && isCurrentConversationBlank()) {
             return false
         }
+        if (!isRoleplayMode()) {
+            val existingBlank = conversations.firstOrNull { !conversationHasUserMessage(it.id) }
+            if (existingBlank != null) {
+                selectConversation(existingBlank.id)
+                return true
+            }
+        }
         newConversation()
         return true
     }

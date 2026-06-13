@@ -253,12 +253,15 @@ internal fun SettingsScreen(
 ) {
     var detail by rememberSaveable { mutableStateOf<String?>(null) }
     val settingsListScroll = rememberScrollState()
-    BackHandler(enabled = detail != null) { detail = null }
+    fun navigateBackFromDetail() {
+        detail = if (detail == "device") "about" else null
+    }
+    BackHandler(enabled = detail != null) { navigateBackFromDetail() }
     LaunchedEffect(detail) {
         onDetailTitleChange(detail?.let(::settingsDetailTitle))
     }
     LaunchedEffect(settingsBackRequest) {
-        if (settingsBackRequest > 0 && detail != null) detail = null
+        if (settingsBackRequest > 0 && detail != null) navigateBackFromDetail()
     }
     AnimatedContent(
         targetState = detail,
@@ -271,7 +274,7 @@ internal fun SettingsScreen(
     ) { target ->
         if (target != null) {
             SettingsDetailPage(
-                scroll = target !in setOf("prompts", "licenses", "about"),
+                scroll = target !in setOf("prompts", "licenses", "about", "device"),
             ) {
                 when (target) {
                     "profile" -> ProfileSettingsSummary(settings)
@@ -320,7 +323,8 @@ internal fun SettingsScreen(
                         onDeleteSkill = onDeleteSkill,
                     )
                     "licenses" -> OpenSourceLicensesScreen()
-                    "about" -> AboutSoftwareScreen()
+                    "about" -> AboutSoftwareScreen(onOpenDeviceInfo = { detail = "device" })
+                    "device" -> DeviceInfoScreen()
                     else -> Text("该设置项暂未开放。", color = KimiMuted)
                 }
             }
@@ -429,6 +433,7 @@ internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "skills" -> "Skills"
     "licenses" -> "开源许可证"
     "about" -> "关于软件"
+    "device" -> "手机信息"
     else -> "设置"
 }
 
@@ -2480,6 +2485,7 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
     AgentToolInfo("manage_app_config", "配置管理", "通过用户确认后添加、修改、启用、禁用或删除 MCP、SSH、WebDAV、Skills 与其他 Agent 工具配置。"),
     AgentToolInfo("get_current_time", "时间感知", "读取设备当前时间和时区。"),
     AgentToolInfo("get_current_location", "地理感知", "读取设备最近系统定位。"),
+    AgentToolInfo("get_device_hardware_info", "硬件检查", "读取设备系统、CPU、内存、存储、分辨率、网络、蓝牙、电池等诊断信息。"),
     AgentToolInfo("list_ssh_servers", "列出 SSH 连接", "查看用户已配置且启用的 SSH 服务器标识。"),
     AgentToolInfo("ssh_exec", "SSH 执行命令", "登录远程服务器执行命令并返回 stdout/stderr，执行前需要用户确认。"),
     AgentToolInfo("list_webdav_servers", "列出 WebDAV", "查看用户已配置且启用的 WebDAV 服务器标识。"),
@@ -2672,7 +2678,7 @@ internal fun OpenSourceLicensesScreen() {
 }
 
 @Composable
-internal fun AboutSoftwareScreen() {
+internal fun AboutSoftwareScreen(onOpenDeviceInfo: () -> Unit) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
@@ -2870,7 +2876,7 @@ internal fun AboutSoftwareScreen() {
             }
             KimiSectionLabel("构建信息")
             KimiCardBox {
-                KimiMenuRow(Icons.Default.Android, "Android SDK", Build.VERSION.SDK_INT.toString())
+                KimiMenuRow(Icons.Default.PhoneAndroid, "手机信息", "${Build.MANUFACTURER} ${Build.MODEL}", onClick = onOpenDeviceInfo)
                 KimiDivider()
                 KimiMenuRow(Icons.Default.CloudDownload, "更新清单", updateManager.manifestUrl().ifBlank { "未配置" })
             }
@@ -2881,6 +2887,73 @@ internal fun AboutSoftwareScreen() {
                 .align(Alignment.Center)
                 .padding(24.dp),
             onDismiss = { notice = "" },
+        )
+    }
+}
+
+@Composable
+internal fun DeviceInfoScreen() {
+    val context = LocalContext.current
+    val snapshot = remember { DeviceInfoCollector.collect(context) }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 24.dp),
+    ) {
+        item {
+            KimiCardBox {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Text("手机信息", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        "用于截图反馈、排查兼容性问题，以及让硬件检查 Agent 分析当前设备环境。部分项目受系统权限和 Android 沙箱限制，可能只能显示近似信息。",
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+        snapshot.sections.forEach { section ->
+            item { KimiSectionLabel(section.title) }
+            item {
+                KimiCardBox {
+                    SelectionContainer {
+                        Column {
+                            section.items.forEachIndexed { index, item ->
+                                DeviceInfoRow(item)
+                                if (index != section.items.lastIndex) KimiDivider()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun DeviceInfoRow(item: DeviceInfoItem) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            item.label,
+            modifier = Modifier.widthIn(min = 88.dp, max = 112.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            item.value,
+            modifier = Modifier.weight(1f),
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodyMedium,
         )
     }
 }

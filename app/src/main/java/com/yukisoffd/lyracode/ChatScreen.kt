@@ -4,11 +4,13 @@ import android.Manifest
 import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,6 +18,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.provider.MediaStore
 import android.util.Base64
+import android.util.DisplayMetrics
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -34,6 +37,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -62,8 +67,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
@@ -138,6 +146,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -150,12 +159,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.yukisoffd.lyracode.ai.ChatRecord
 import com.yukisoffd.lyracode.ai.AiResponseCache
 import com.yukisoffd.lyracode.ai.OpenAiAgent
@@ -202,6 +214,115 @@ import kotlin.math.abs
 import android.graphics.Canvas as AndroidCanvas
 
 @Composable
+internal fun Modifier.keyboardAwareInputPadding(): Modifier {
+    val targetOffsetPx = rememberKeyboardAvoidanceOffsetPx()
+    val bottomOffsetPx by animateIntAsState(
+        targetValue = targetOffsetPx,
+        animationSpec = tween(durationMillis = 180),
+        label = "keyboardAvoidanceOffset",
+    )
+    return offset {
+        IntOffset(x = 0, y = -bottomOffsetPx)
+    }
+}
+
+@Composable
+internal fun rememberKeyboardAvoidanceOffsetPx(): Int {
+    val context = LocalContext.current
+    val view = LocalView.current
+    val density = LocalDensity.current
+    val composeImeBottom = WindowInsets.ime.getBottom(density)
+    val navigationBottom = WindowInsets.navigationBars.getBottom(density)
+    var legacyMetrics by remember(view, context) { mutableStateOf(KeyboardAvoidanceMetrics()) }
+
+    DisposableEffect(view, context) {
+        val visibleFrame = Rect()
+        val listener = android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            val rootView = view.rootView ?: view
+            val rootHeight = rootView.height.takeIf { it > 0 } ?: view.height
+            if (rootHeight <= 0) {
+                legacyMetrics = KeyboardAvoidanceMetrics()
+                return@OnGlobalLayoutListener
+            }
+            rootView.getWindowVisibleDisplayFrame(visibleFrame)
+            val composeViewHeight = view.height.takeIf { it > 0 } ?: rootHeight
+            val realHeight = context.realDisplayHeightPx().takeIf { it > 0 } ?: rootHeight
+            val keyboardThreshold = (realHeight * LEGACY_IME_VISIBLE_THRESHOLD).toInt()
+            val windowResizedByIme =
+                realHeight - rootHeight > keyboardThreshold ||
+                    realHeight - composeViewHeight > keyboardThreshold ||
+                    rootHeight - composeViewHeight > keyboardThreshold
+            val rootHiddenBottom = (rootHeight - visibleFrame.bottom).coerceAtLeast(0)
+            val realHiddenBottom = (realHeight - visibleFrame.bottom).coerceAtLeast(0)
+            val frameHiddenBottom = if (windowResizedByIme) {
+                0
+            } else {
+                max(rootHiddenBottom, realHiddenBottom)
+            }
+            val compatImeBottom = ViewCompat.getRootWindowInsets(rootView)
+                ?.getInsets(WindowInsetsCompat.Type.ime())
+                ?.bottom
+                ?: 0
+            legacyMetrics = KeyboardAvoidanceMetrics(
+                frameHiddenBottom = frameHiddenBottom,
+                compatImeBottom = compatImeBottom,
+                windowResizedByIme = windowResizedByIme,
+            )
+        }
+        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        listener.onGlobalLayout()
+        onDispose {
+            if (view.viewTreeObserver.isAlive) {
+                view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+            }
+        }
+    }
+
+    if (legacyMetrics.windowResizedByIme) {
+        return 0
+    }
+    val keyboardBottom = max(composeImeBottom, max(legacyMetrics.compatImeBottom, legacyMetrics.frameHiddenBottom))
+    val minKeyboardBottom = with(density) { LEGACY_IME_MIN_BOTTOM_DP.dp.roundToPx() }
+    if (keyboardBottom < minKeyboardBottom) {
+        return 0
+    }
+    return (keyboardBottom - navigationBottom).coerceAtLeast(0)
+}
+
+private const val LEGACY_IME_VISIBLE_THRESHOLD = 0.15f
+private const val LEGACY_IME_MIN_BOTTOM_DP = 80
+
+private data class KeyboardAvoidanceMetrics(
+    val frameHiddenBottom: Int = 0,
+    val compatImeBottom: Int = 0,
+    val windowResizedByIme: Boolean = false,
+)
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun Context.realDisplayHeightPx(): Int {
+    val activity = findActivity()
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && activity != null) {
+        activity.windowManager.currentWindowMetrics.bounds.height()
+    } else {
+        @Suppress("DEPRECATION")
+        val display = activity?.windowManager?.defaultDisplay
+        if (display != null) {
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            metrics.heightPixels
+        } else {
+            resources.displayMetrics.heightPixels
+        }
+    }
+}
+
+@Composable
 internal fun ChatScreen(controller: ChatController, settings: AppSettings, termuxExecutor: TermuxExecutor) {
     val context = LocalContext.current
     var input by rememberSaveable { mutableStateOf("") }
@@ -230,6 +351,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
     var autoFollowOutput by remember(controller.activeConversationId.value) { mutableStateOf(true) }
     val isInterrupted = controller.activeConversation()?.status == ConversationStore.STATUS_INTERRUPTED
     val termuxPermissionGranted = termuxExecutor.hasRunCommandPermission()
+    var hideTermuxHint by remember { mutableStateOf(settings.hideTermuxPermissionHint) }
     controller.pendingToolApproval.value?.let { pending ->
         ToolApprovalDialog(
             pending = pending,
@@ -381,9 +503,12 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                 if (messageSnapshot.isEmpty()) {
                     item(key = "empty-greeting") {
                         EmptyConversationGreeting(
-                            showTermuxHint = !termuxPermissionGranted && !settings.hideTermuxPermissionHint,
+                            showTermuxHint = !termuxPermissionGranted && !hideTermuxHint,
                             onGrantTermux = { requestTermuxRunCommandPermission(context) },
-                            onHideTermuxHint = { settings.hideTermuxPermissionHint = true },
+                            onHideTermuxHint = {
+                                hideTermuxHint = true
+                                settings.hideTermuxPermissionHint = true
+                            },
                         )
                     }
                 }
@@ -427,7 +552,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             Text(statusLine, color = KimiMuted, style = MaterialTheme.typography.labelMedium)
         }
         Card(
-            Modifier.fillMaxWidth().imePadding(),
+            Modifier.fillMaxWidth().keyboardAwareInputPadding(),
             shape = RoundedCornerShape(28.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
@@ -620,7 +745,7 @@ internal fun RoleplayChatScreen(
                 }
             }
             Card(
-                Modifier.fillMaxWidth().imePadding(),
+                Modifier.fillMaxWidth().keyboardAwareInputPadding(),
                 shape = RoundedCornerShape(28.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
             ) {

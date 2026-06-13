@@ -8,6 +8,7 @@ import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.yukisoffd.lyracode.DeviceInfoCollector
 import com.yukisoffd.lyracode.data.ApiProfile
 import com.yukisoffd.lyracode.data.AppSettings
 import com.yukisoffd.lyracode.data.BackupManager
@@ -1179,6 +1180,7 @@ class OpenAiAgent(
                 "update_roleplay_state" -> ToolExecution(updateRoleplayState(args))
                 "get_current_time" -> ToolExecution(currentTimeInfo())
                 "get_current_location" -> ToolExecution(currentLocationInfo())
+                "get_device_hardware_info" -> ToolExecution(DeviceInfoCollector.collectJson(context))
                 "list_ssh_servers" -> ToolExecution(sshExecutor.availableServers())
                 "ssh_exec" -> {
                     val server = settings.resolveSshServer(args.getString("server_id"))
@@ -2644,6 +2646,7 @@ class OpenAiAgent(
         )
         .put(function("get_current_time", "读取设备当前本地时间、时区和时间戳。需要判断今天、近期、搜索时间范围或个性化回答时调用。"))
         .put(function("get_current_location", "读取设备最近一次系统定位。需要按用户所在地区个性化回答或联网搜索地区相关信息时调用；若未授权会返回权限状态。"))
+        .put(function("get_device_hardware_info", "硬件检查工具。读取当前 Android 设备的系统、CPU、内存、存储、ABI、分辨率、网络、蓝牙、电池等诊断信息。用于机型问题排查、判断设备硬件是否异常、山寨机线索分析、购机性价比比较等；不要把结果视为绝对鉴定结论。"))
         .put(function("list_ssh_servers", "列出用户已配置且启用的 SSH 服务器。调用 ssh_exec 前必须先调用本工具，使用返回的 id（通常是 host:port）作为 server_id。"))
         .put(
             functionWithOptional(
@@ -3040,6 +3043,7 @@ class OpenAiAgent(
             "manage_app_config",
             "get_current_time",
             "get_current_location",
+            "get_device_hardware_info",
             "list_ssh_servers",
             "ssh_exec",
             "list_webdav_servers",
