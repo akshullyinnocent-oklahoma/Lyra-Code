@@ -15,8 +15,8 @@ android {
         applicationId = "com.yukisoffd.lyracode"
         minSdk = 26
         targetSdk = 36
-        versionCode = 36
-        versionName = "2.2.2"
+        versionCode = 37
+        versionName = "2.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField(
@@ -51,6 +51,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
     sourceSets {
         getByName("main") {
@@ -74,6 +75,8 @@ dependencies {
     implementation(libs.jsch)
     implementation(project(":jlatexmath"))
     implementation(libs.jetbrains.markdown)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     testImplementation(libs.json)

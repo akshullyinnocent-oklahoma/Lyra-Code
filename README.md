@@ -15,14 +15,14 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.2.2-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.3.0-blue" />
   <img alt="Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/license-Dual%20License%20%2F%20AGPLv3-orange" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-HTTP%20%2F%20SSE-purple" />
 </p>
 
-Lyra Code is an Android-first local AI Agent app. It brings model chat, file tools, command execution, web search, MCP, SSH, WebDAV, backups, and Skills into a mobile workflow, so an Android device can handle coding, writing, research, remote maintenance, and automation tasks.
+Lyra Code is an Android-first local AI Agent app. It brings model chat, file tools, native downloads, command execution, web search, MCP, SSH, WebDAV, backups, Skills, device diagnostics, and usage statistics into a mobile workflow, so an Android device can handle coding, writing, research, remote maintenance, and automation tasks.
 
 ## Screenshots
 
@@ -44,11 +44,21 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 ### Agent Tools
 
 - File read, write, append, rename, move, delete, directory creation, and global file search.
+- Native HTTP/HTTPS file downloads to the workspace or Android shared storage, with redirects, custom headers, timeouts, and optional SHA-256 verification.
 - Command execution through Termux RunCommandService with stdout/stderr feedback.
 - TODO planning, process records, file-change review, and diff visualization.
 - Web search, web page reading, and source annotation.
 - Time awareness, location awareness, and configuration management.
 - Multi-round tool loops with user review, approval, and per-session confirmation bypass.
+- Native downloads are preferred; Termux `curl` / `wget` are retained only as fallback options.
+
+### Device and System Tools
+
+- Device information page covering manufacturer, model, Android version, CPU/hardware, ABI, memory, storage, display, network, Bluetooth, and battery state.
+- Hardware inspection Agent for device diagnostics, troubleshooting, and hardware comparison.
+- Installed-app recognition with app name, package name, version, size, category, and signing certificate SHA-256.
+- Optional Shizuku Shell and Root command tools with configurable `su` commands, permission fallback, full command preview, and explicit user approval.
+- System-level tools can be disabled independently from the Agent settings page.
 
 ### MCP / SSH / WebDAV
 
@@ -77,6 +87,12 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 - Local zip backup and WebDAV cloud backup.
 - Supplement import mode with deduplication to reduce the risk of overwriting existing secrets.
 - Safe export without API keys, or full migration export with secrets included.
+
+### Usage Statistics
+
+- Counts conversations, messages, user-input tokens, and AI-output tokens, including reasoning and tool context.
+- Offline token estimation without a network dependency.
+- Daily, weekly, monthly, yearly, total, and historical date-range views.
 
 ### Immersive Roleplay
 

@@ -179,6 +179,7 @@ import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
+import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.TransferProgress
 import com.yukisoffd.lyracode.webdav.WebDavClient
@@ -212,6 +213,7 @@ internal fun LyraCodeApp(
     termuxExecutor: TermuxExecutor,
     mcpClientManager: McpClientManager,
     sshExecutor: SshExecutor,
+    systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
     backupManager: BackupManager,
     controller: ChatController,
@@ -456,6 +458,7 @@ internal fun LyraCodeApp(
                             termuxExecutor = termuxExecutor,
                             mcpClientManager = mcpClientManager,
                             sshExecutor = sshExecutor,
+                            systemCommandExecutor = systemCommandExecutor,
                             webDavClient = webDavClient,
                             backupManager = backupManager,
                             workspaceDisplayName = workspaceName,

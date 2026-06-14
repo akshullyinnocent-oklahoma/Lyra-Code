@@ -143,6 +143,11 @@ class UpdateManager(private val context: Context) {
     fun pendingDownloadedApk(): File? {
         val path = prefs.getString(KEY_PENDING_APK_PATH, null).orEmpty()
         if (path.isBlank()) return null
+        val pendingVersionCode = prefs.getLong(KEY_PENDING_VERSION_CODE, 0L)
+        if (pendingVersionCode > 0L && currentVersionCode() >= pendingVersionCode) {
+            clearPendingApk()
+            return null
+        }
         val file = File(path)
         if (!file.exists() || file.length() <= 0L || !isZipApk(file)) {
             clearPendingApk()
@@ -164,7 +169,12 @@ class UpdateManager(private val context: Context) {
         return if (version.isNotBlank()) "继续安装 $version" else "继续安装已下载更新"
     }
 
-    fun clearPendingApk() {
+    fun clearPendingApk(deleteFile: Boolean = true) {
+        if (deleteFile) {
+            prefs.getString(KEY_PENDING_APK_PATH, null)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { runCatching { File(it).delete() } }
+        }
         prefs.edit().clear().apply()
     }
 

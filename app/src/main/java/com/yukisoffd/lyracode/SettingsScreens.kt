@@ -194,6 +194,7 @@ import com.yukisoffd.lyracode.data.UpdateManager
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
+import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.TransferProgress
 import com.yukisoffd.lyracode.webdav.WebDavClient
@@ -216,6 +217,8 @@ import java.util.Locale
 import kotlin.math.min
 import kotlin.math.max
 import kotlin.math.abs
+import kotlin.math.roundToInt
+import rikka.shizuku.Shizuku
 import android.graphics.Canvas as AndroidCanvas
 
 @Composable
@@ -226,6 +229,7 @@ internal fun SettingsScreen(
     termuxExecutor: TermuxExecutor,
     mcpClientManager: McpClientManager,
     sshExecutor: SshExecutor,
+    systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
     backupManager: BackupManager,
     workspaceDisplayName: String,
@@ -296,6 +300,7 @@ internal fun SettingsScreen(
                         onCustomFontScaleChange = onCustomFontScaleChange,
                     )
                     "permissions" -> PermissionSettings(termuxExecutor)
+                    "system_permissions" -> SystemPermissionSettings(settings, systemCommandExecutor)
                     "tools" -> AgentToolSettings(settings, termuxExecutor, controller.settingsRevision.intValue)
                     "termux" -> TermuxSettings(settings, termuxExecutor, workspaceManager)
                     "mcp" -> McpSettings(settings, mcpClientManager, controller.settingsRevision.intValue)
@@ -378,6 +383,8 @@ internal fun SettingsScreen(
                 KimiDivider()
                 KimiMenuRow(Icons.Default.ImportExport, "数据导出导入", "本地或 WebDAV 备份与恢复") { detail = "backup" }
                 KimiDivider()
+                KimiMenuRow(Icons.Default.AdminPanelSettings, "系统权限", "配置 Root、Shizuku Shell 与 su 命令") { detail = "system_permissions" }
+                KimiDivider()
                 KimiMenuRow(Icons.Default.Security, "应用权限", "查看媒体、摄像头、位置与 Termux 权限") { detail = "permissions" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Description, "开源许可证", "查看第三方组件许可证") { detail = "licenses" }
@@ -421,6 +428,7 @@ internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "theme" -> "主题设置"
     "font" -> "字体大小"
     "permissions" -> "应用权限"
+    "system_permissions" -> "系统权限"
     "tools" -> "AI Agent 工具"
     "storage" -> "缓存与存储"
     "roleplay" -> "沉浸扮演模式"
@@ -1088,7 +1096,7 @@ internal fun FontSizeSettings(
             AppSettings.FONT_SCALE_EXTRA_LARGE -> 1.25f
             AppSettings.FONT_SCALE_CUSTOM -> customFontScale
             else -> 1.0f
-        }.coerceIn(0.85f, 1.35f)
+        }.coerceIn(AppSettings.MIN_FONT_SCALE, AppSettings.MAX_FONT_SCALE)
     }
     var draftScale by remember(fontScaleMode, customFontScale) { mutableStateOf(initialScale) }
     val followSystem = fontScaleMode == AppSettings.FONT_SCALE_SYSTEM
@@ -1098,7 +1106,13 @@ internal fun FontSizeSettings(
             .padding(top = 18.dp),
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(26.dp)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(26.dp),
+        ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
                     shape = RoundedCornerShape(18.dp),
@@ -1142,13 +1156,20 @@ internal fun FontSizeSettings(
                     Text(fontScaleLabel(draftScale), color = KimiMuted, style = MaterialTheme.typography.labelMedium)
                     Slider(
                         value = draftScale,
-                        onValueChange = { draftScale = it },
+                        onValueChange = {
+                            draftScale = (
+                                it / AppSettings.FONT_SCALE_STEP
+                            ).roundToInt() * AppSettings.FONT_SCALE_STEP
+                        },
                         onValueChangeFinished = {
                             onFontScaleModeChange(AppSettings.FONT_SCALE_CUSTOM)
                             onCustomFontScaleChange(draftScale)
                         },
-                        valueRange = 0.85f..1.35f,
-                        steps = 4,
+                        valueRange = AppSettings.MIN_FONT_SCALE..AppSettings.MAX_FONT_SCALE,
+                        steps = (
+                            (AppSettings.MAX_FONT_SCALE - AppSettings.MIN_FONT_SCALE) /
+                                AppSettings.FONT_SCALE_STEP
+                            ).roundToInt() - 1,
                         enabled = !followSystem,
                     )
                 }
@@ -1159,10 +1180,14 @@ internal fun FontSizeSettings(
 }
 
 internal fun fontScaleLabel(scale: Float): String = when {
-    scale < 0.95f -> "小"
-    scale < 1.06f -> "标准"
-    scale < 1.18f -> "大"
-    else -> "超大"
+    scale < 0.65f -> "最小 ${(scale * 100).roundToInt()}%"
+    scale < 0.8f -> "极小 ${(scale * 100).roundToInt()}%"
+    scale < 0.95f -> "小 ${(scale * 100).roundToInt()}%"
+    scale < 1.08f -> "标准 ${(scale * 100).roundToInt()}%"
+    scale < 1.35f -> "大 ${(scale * 100).roundToInt()}%"
+    scale < 1.65f -> "超大 ${(scale * 100).roundToInt()}%"
+    scale < 2.1f -> "极大 ${(scale * 100).roundToInt()}%"
+    else -> "最大 ${(scale * 100).roundToInt()}%"
 }
 
 internal fun themeName(mode: String): String = when (mode) {
@@ -1176,7 +1201,7 @@ internal fun fontScaleName(mode: String, customFontScale: Float): String = when 
     AppSettings.FONT_SCALE_NORMAL -> "标准字"
     AppSettings.FONT_SCALE_LARGE -> "大字"
     AppSettings.FONT_SCALE_EXTRA_LARGE -> "超大字"
-    AppSettings.FONT_SCALE_CUSTOM -> "自定义 ${(customFontScale * 100).toInt()}%"
+    AppSettings.FONT_SCALE_CUSTOM -> "自定义 ${(customFontScale * 100).roundToInt()}%"
     else -> "字体跟随系统"
 }
 
@@ -1374,6 +1399,143 @@ internal fun formatBytes(bytes: Long): String {
 }
 
 @Composable
+internal fun SystemPermissionSettings(
+    settings: AppSettings,
+    executor: SystemCommandExecutor,
+) {
+    val scope = rememberCoroutineScope()
+    var rootEnabled by remember { mutableStateOf(settings.requestRootAccess) }
+    var shellEnabled by remember { mutableStateOf(settings.requestShellAccess) }
+    var suCommand by remember { mutableStateOf(settings.customSuCommand) }
+    var revision by remember { mutableIntStateOf(0) }
+    var rootStatus by remember { mutableStateOf("尚未检测") }
+    val shizukuRunning = remember(revision) { executor.isShizukuRunning() }
+    val shellGranted = remember(revision) { executor.hasShellPermission() }
+    val permissionListener = remember {
+        Shizuku.OnRequestPermissionResultListener { requestCode, _ ->
+            if (requestCode == SHIZUKU_PERMISSION_REQUEST_CODE) revision++
+        }
+    }
+    val binderReceivedListener = remember {
+        Shizuku.OnBinderReceivedListener { revision++ }
+    }
+    val binderDeadListener = remember {
+        Shizuku.OnBinderDeadListener { revision++ }
+    }
+    DisposableEffect(Unit) {
+        Shizuku.addRequestPermissionResultListener(permissionListener)
+        Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
+        Shizuku.addBinderDeadListener(binderDeadListener)
+        onDispose {
+            Shizuku.removeRequestPermissionResultListener(permissionListener)
+            Shizuku.removeBinderReceivedListener(binderReceivedListener)
+            Shizuku.removeBinderDeadListener(binderDeadListener)
+        }
+    }
+    KimiCardBox {
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("请求 Root 权限", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "通过 Magisk、KernelSU 等 su 管理器授权。不可用时可回退到已授权的 Shell。",
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = rootEnabled,
+                onCheckedChange = {
+                    rootEnabled = it
+                    settings.requestRootAccess = it
+                },
+            )
+        }
+        KimiDivider()
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("请求 Shell 权限", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    when {
+                        shellGranted -> "Shizuku Shell 已授权"
+                        shizukuRunning -> "Shizuku 正在运行，开启后请求授权"
+                        else -> "需要先通过无线调试或电脑 ADB 启动 Shizuku"
+                    },
+                    color = if (shellGranted) MaterialTheme.colorScheme.primary else KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = shellEnabled,
+                onCheckedChange = { enabled ->
+                    shellEnabled = enabled
+                    settings.requestShellAccess = enabled
+                    if (enabled && shizukuRunning && !shellGranted) {
+                        Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE)
+                    }
+                },
+            )
+        }
+    }
+    KimiCardBox {
+        OutlinedTextField(
+            value = suCommand,
+            onValueChange = {
+                suCommand = it
+                settings.customSuCommand = it
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("自定义 su 命令") },
+            supportingText = {
+                Text("默认 su -c。可用 {command} 指定命令插入位置，例如 su 0 sh -c {command}。")
+            },
+            singleLine = true,
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(
+                onClick = {
+                    if (shizukuRunning && !shellGranted) {
+                        Shizuku.requestPermission(SHIZUKU_PERMISSION_REQUEST_CODE)
+                    } else {
+                        revision++
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (shellGranted) "Shell 已授权" else "授权 Shell")
+            }
+            OutlinedButton(
+                onClick = {
+                    rootStatus = "检测中..."
+                    scope.launch {
+                        val result = executor.probeRoot()
+                        rootStatus = if (result.ok && result.stdout.trim().lineSequence().lastOrNull() == "0") {
+                            "Root 可用"
+                        } else {
+                            "Root 不可用：${result.stderr.ifBlank { result.message }.take(120)}"
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("检测 Root")
+            }
+        }
+        Text(rootStatus, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+    }
+    Text(
+        "Root 和 Shell 开关都关闭时，AI 不会看到任何系统命令工具。所有 Shell/Root 命令都会先显示完整命令并请求确认；Root 命令风险更高。普通 ADB 不会永久赋予应用 shell 身份，本应用通过 Shizuku 获取该能力。",
+        color = KimiMuted,
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+private const val SHIZUKU_PERMISSION_REQUEST_CODE = 2300
+
+@Composable
 internal fun PermissionSettings(termuxExecutor: TermuxExecutor) {
     val context = LocalContext.current
     var revision by remember { mutableIntStateOf(0) }
@@ -1382,7 +1544,14 @@ internal fun PermissionSettings(termuxExecutor: TermuxExecutor) {
     }
     KimiCardBox {
         permissions.forEachIndexed { index, row ->
-            KimiMenuRow(row.icon, row.title, if (row.granted) "已允许" else row.status) {
+            val displayStatus = if (row.title == "读取应用列表") {
+                row.status
+            } else if (row.granted) {
+                "已允许"
+            } else {
+                row.status
+            }
+            KimiMenuRow(row.icon, row.title, displayStatus) {
                 if (row.title == "与 Termux 通信") {
                     requestTermuxRunCommandPermission(context)
                     revision++
@@ -2471,6 +2640,7 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
     AgentToolInfo("global_create_folder", "全局创建目录", "在工作区外共享存储创建目录，执行前需要用户确认。"),
     AgentToolInfo("global_delete_file_or_folder", "全局删除文件/目录", "删除工作区外共享存储内容，执行前需要用户确认。"),
     AgentToolInfo("global_rename_move", "全局移动/重命名", "移动工作区外共享存储内容，执行前需要用户确认。"),
+    AgentToolInfo("download_file", "下载文件", "使用应用原生 HTTP/HTTPS 客户端下载到工作区或共享存储，支持请求头和 SHA-256 校验。"),
     AgentToolInfo("search_files", "工作区搜索", "按文件名或路径片段搜索工作区。"),
     AgentToolInfo("global_search_files", "全局文件搜索", "搜索 Android 共享存储中的文件路径。"),
     AgentToolInfo("get_file_info", "文件信息", "读取文件大小、修改时间等元数据。"),
@@ -2486,6 +2656,9 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
     AgentToolInfo("get_current_time", "时间感知", "读取设备当前时间和时区。"),
     AgentToolInfo("get_current_location", "地理感知", "读取设备最近系统定位。"),
     AgentToolInfo("get_device_hardware_info", "硬件检查", "读取设备系统、CPU、内存、存储、分辨率、网络、蓝牙、电池等诊断信息。"),
+    AgentToolInfo("list_installed_apps", "应用列表识别", "读取用户应用和系统应用的名称、包名、版本、大小及签名证书 SHA-256。"),
+    AgentToolInfo("execute_shell_command", "Shell 系统命令", "通过 Shizuku 以 Android shell 身份执行系统命令，每次执行前都需要用户确认。"),
+    AgentToolInfo("execute_root_command", "Root 系统命令", "通过自定义 su 命令执行 Root 命令，每次执行前都需要用户确认；不可用时可按设置回退到 Shell。"),
     AgentToolInfo("list_ssh_servers", "列出 SSH 连接", "查看用户已配置且启用的 SSH 服务器标识。"),
     AgentToolInfo("ssh_exec", "SSH 执行命令", "登录远程服务器执行命令并返回 stdout/stderr，执行前需要用户确认。"),
     AgentToolInfo("list_webdav_servers", "列出 WebDAV", "查看用户已配置且启用的 WebDAV 服务器标识。"),

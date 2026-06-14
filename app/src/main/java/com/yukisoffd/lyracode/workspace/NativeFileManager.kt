@@ -7,6 +7,7 @@ import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import java.io.FileNotFoundException
+import java.io.InputStream
 import java.util.ArrayDeque
 
 data class WorkspaceFile(
@@ -65,6 +66,13 @@ class NativeFileManager(
         context.contentResolver.openOutputStream(file.uri, "wt")?.use { it.write(bytes) }
             ?: throw FileNotFoundException("无法写入: $path")
         "已写入 ${bytes.size} 字节: $path"
+    }
+
+    fun writeStream(path: String, input: InputStream): Result<Long> = runCatching {
+        val file = findOrCreateFile(path)
+        context.contentResolver.openOutputStream(file.uri, "wt")?.buffered()?.use { output ->
+            input.copyTo(output)
+        } ?: throw FileNotFoundException("无法写入: $path")
     }
 
     fun appendFile(path: String, content: String): Result<String> = runCatching {

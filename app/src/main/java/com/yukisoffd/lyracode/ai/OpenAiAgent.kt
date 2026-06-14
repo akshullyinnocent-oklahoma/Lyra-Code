@@ -22,6 +22,8 @@ import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
+import com.yukisoffd.lyracode.system.InstalledAppCollector
+import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.WebDavClient
 import com.yukisoffd.lyracode.workspace.GlobalFileManager
@@ -39,8 +41,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URI
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.net.URI
+import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -141,6 +145,7 @@ class OpenAiAgent(
     private val webAgent: WebViewWebAgent,
     private val mcpClientManager: McpClientManager,
     private val sshExecutor: SshExecutor,
+    private val systemCommandExecutor: SystemCommandExecutor,
     private val webDavClient: WebDavClient,
     private val backupManager: BackupManager,
     private val responseCache: AiResponseCache? = null,
@@ -1166,6 +1171,7 @@ class OpenAiAgent(
                 "global_create_folder" -> ToolExecution(globalFileManager.createFolder(args.getString("path")).getOrThrow())
                 "global_delete_file_or_folder" -> ToolExecution(globalFileManager.delete(args.getString("path")).getOrThrow())
                 "global_rename_move" -> ToolExecution(globalFileManager.renameMove(args.getString("from"), args.getString("to")).getOrThrow())
+                "download_file" -> downloadFile(args)
                 "search_files" -> {
                     val query = args.getString("query")
                     val path = args.optString("path")
@@ -1181,6 +1187,28 @@ class OpenAiAgent(
                 "get_current_time" -> ToolExecution(currentTimeInfo())
                 "get_current_location" -> ToolExecution(currentLocationInfo())
                 "get_device_hardware_info" -> ToolExecution(DeviceInfoCollector.collectJson(context))
+                "list_installed_apps" -> ToolExecution(
+                    InstalledAppCollector.collect(
+                        context = context,
+                        scope = args.optString("scope", "all"),
+                        query = args.optString("query"),
+                        offset = args.optInt("offset", 0),
+                        limit = args.optInt("limit", 100),
+                    ),
+                )
+                "execute_shell_command" -> ToolExecution(
+                    systemCommandExecutor.executeShell(
+                        command = args.toolCommandArgument(),
+                        timeoutSeconds = args.optInt("timeout_seconds", 60),
+                    ).toJson(),
+                )
+                "execute_root_command" -> ToolExecution(
+                    systemCommandExecutor.executeRoot(
+                        command = args.toolCommandArgument(),
+                        timeoutSeconds = args.optInt("timeout_seconds", 60),
+                        allowShellFallback = true,
+                    ).toJson(),
+                )
                 "list_ssh_servers" -> ToolExecution(sshExecutor.availableServers())
                 "ssh_exec" -> {
                     val server = settings.resolveSshServer(args.getString("server_id"))
@@ -1898,6 +1926,81 @@ class OpenAiAgent(
         }
     }
 
+    private fun downloadFile(args: JSONObject): ToolExecution {
+        val url = args.getString("url").trim()
+        require(url.startsWith("http://", true) || url.startsWith("https://", true)) {
+            "下载 URL 必须是 http:// 或 https://"
+        }
+        val destination = args.optString("destination", "workspace").trim().lowercase(Locale.US)
+        require(destination == "workspace" || destination == "global") {
+            "destination 只能是 workspace 或 global"
+        }
+        val path = args.getString("path").trim()
+        require(path.isNotBlank()) { "下载目标 path 不能为空" }
+        val expectedSha256 = args.optString("sha256").trim().lowercase(Locale.US)
+        require(expectedSha256.isBlank() || expectedSha256.matches(Regex("[0-9a-f]{64}"))) {
+            "sha256 必须是 64 位十六进制字符串"
+        }
+        val timeoutSeconds = args.optInt("timeout_seconds", 300).coerceIn(10, 1800)
+        val requestBuilder = Request.Builder().url(url).get()
+        args.optJSONArray("headers")?.let { headers ->
+            for (index in 0 until headers.length()) {
+                val line = headers.optString(index).trim()
+                if (line.isBlank()) continue
+                val separator = line.indexOf(':')
+                require(separator > 0) { "headers 每项必须使用 Name: Value 格式" }
+                val name = line.substring(0, separator).trim()
+                val value = line.substring(separator + 1).trim()
+                require(name.isNotBlank() && value.isNotBlank()) { "请求头名称和值不能为空" }
+                requestBuilder.header(name, value)
+            }
+        }
+
+        val tempFile = File.createTempFile("agent_download_", ".part", context.cacheDir)
+        try {
+            val downloadClient = client.newBuilder()
+                .readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+                .callTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
+                .build()
+            return downloadClient.newCall(requestBuilder.build()).execute().use { response ->
+                val body = response.body ?: error("下载响应为空")
+                if (!response.isSuccessful) {
+                    error("下载失败 HTTP ${response.code}: ${body.string().take(500)}")
+                }
+                val digest = MessageDigest.getInstance("SHA-256")
+                DigestInputStream(body.byteStream(), digest).use { input ->
+                    tempFile.outputStream().buffered().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                if (expectedSha256.isNotBlank() && actualSha256 != expectedSha256) {
+                    error("SHA-256 校验失败: expected=$expectedSha256 actual=$actualSha256")
+                }
+                val written = tempFile.inputStream().buffered().use { input ->
+                    when (destination) {
+                        "workspace" -> nativeFileManager.writeStream(path, input).getOrThrow()
+                        else -> globalFileManager.writeStream(path, input).getOrThrow()
+                    }
+                }
+                ToolExecution(
+                    JSONObject()
+                        .put("status", "downloaded")
+                        .put("url", url)
+                        .put("final_url", response.request.url.toString())
+                        .put("destination", destination)
+                        .put("path", path)
+                        .put("bytes", written)
+                        .put("content_type", body.contentType()?.toString().orEmpty())
+                        .put("sha256", actualSha256)
+                        .toString(),
+                )
+            }
+        } finally {
+            tempFile.delete()
+        }
+    }
+
     private fun mcpServersJson(): JSONArray = JSONArray().also { array ->
         settings.mcpServers().forEach { array.put(mcpServerJson(it)) }
     }
@@ -2116,6 +2219,22 @@ class OpenAiAgent(
                 "移动共享存储文件: ${args.optString("from")} -> ${args.optString("to")}",
                 "会改变工作区外的 Android 共享存储文件路径。",
             )
+            "download_file" -> {
+                val destination = args.optString("destination", "workspace")
+                val target = if (destination.equals("global", true)) "Android 共享存储" else "当前工作区"
+                ToolApprovalRequest(
+                    conversationId,
+                    call.name,
+                    call.rawArguments,
+                    "下载文件到$target: ${args.optString("path")}",
+                    buildString {
+                        append("将从 ${args.optString("url")} 联网下载并写入文件，可能覆盖同名内容。")
+                        if (args.optString("url").startsWith("http://", true)) {
+                            append(" 当前使用明文 HTTP，内容可能被监听或篡改。")
+                        }
+                    },
+                )
+            }
             "run_command" -> if (requiresCommandApproval(args.optString("command"))) {
                 ToolApprovalRequest(
                     conversationId,
@@ -2127,6 +2246,20 @@ class OpenAiAgent(
             } else {
                 null
             }
+            "execute_shell_command" -> ToolApprovalRequest(
+                conversationId,
+                call.name,
+                call.rawArguments,
+                "以 Android Shell 权限执行命令: ${args.toolCommandArgument()}",
+                "Shell 可访问普通应用无法访问的系统区域，也可停用、启用、安装或卸载应用。请确认命令、包名和路径无误。",
+            )
+            "execute_root_command" -> ToolApprovalRequest(
+                conversationId,
+                call.name,
+                call.rawArguments,
+                "以 Root 权限执行命令: ${args.toolCommandArgument()}",
+                "Root 命令拥有完整系统权限，可能造成数据丢失、系统无法启动或安全风险。Root 不可用时仅会按设置回退到 Shizuku Shell。",
+            )
             "ssh_exec" -> ToolApprovalRequest(
                 conversationId,
                 call.name,
@@ -2504,6 +2637,7 @@ class OpenAiAgent(
             Skills 是可选能力包，不是默认系统提示词。先根据 LYRA_ACTIVE_SKILLS_V1 中的 name/description 判断是否相关；相关时再调用 list_skill_files 和 read_skill_file 读取 SKILL.md 或必要文件。不要无差别读取所有 Skills。
             Skills 可能包含桌面、云端或外部服务假设，使用前必须适配 Android、Termux 和 Lyra Code 工具限制。
             MCP 工具来自用户配置的远程或局域网 MCP Server，仅在工具名以 mcp_ 开头时代表外部 MCP 工具。调用 MCP 工具前应用会请求用户确认；不要把 MCP 工具当成本地文件工具使用，也不要假设 MCP Server 可访问 Android 本机工作区。
+            下载 http/https 文件时优先调用 download_file，直接保存到工作区或 Android 共享存储；可提供请求头和 SHA-256 校验。只有 download_file 明确失败、被禁用或不支持目标协议时，才可把 Termux 的 curl/wget 作为最后备用手段。
             只有在工具列表提供 run_command，且需要安装包、运行脚本、Git、长输出或非空目录删除时才调用 run_command；如果工具列表没有 run_command，说明用户未授予 Termux 通信权限或已禁用该工具，不要假设可执行命令。
             需要按文件名、扩展名或路径片段查找文件时，必须先调用 search_files；不要用 run_command 执行 find、fd、locate 或自行写搜索脚本来代替 search_files。
             search_files 的 query 只放文件名或关键词，例如 AvatarSkin.json、build.gradle、MainActivity；path 默认为 "."，除非用户明确限定子目录。
@@ -2589,6 +2723,19 @@ class OpenAiAgent(
         .put(function("global_create_folder", "在 Android 共享存储内创建目录。执行前会请求用户确认。", "path" to "string"))
         .put(function("global_delete_file_or_folder", "删除 Android 共享存储内文件或目录。执行前会请求用户确认。", "path" to "string"))
         .put(function("global_rename_move", "移动或重命名 Android 共享存储内文件或目录。执行前会请求用户确认。", "from" to "string", "to" to "string"))
+        .put(
+            functionWithOptional(
+                "download_file",
+                "使用应用原生 HTTP/HTTPS 客户端下载文件，不依赖 Termux。必须优先于 curl/wget 使用。destination=workspace 时 path 为工作区相对路径；destination=global 时 path 为 Android 共享存储路径，例如 Download/file.zip。执行前会请求用户确认。headers 每项使用 Name: Value 格式；sha256 可用于完整性校验。",
+                required = listOf("url" to "string", "path" to "string"),
+                optional = listOf(
+                    "destination" to "string",
+                    "headers" to "array:string",
+                    "sha256" to "string",
+                    "timeout_seconds" to "integer",
+                ),
+            ),
+        )
         .put(function("search_files", "在工作目录内按文件名、扩展名或路径片段搜索文件。查找文件路径时必须优先使用此工具；query 填文件名或关键词，path 填 . 或相对子目录。", "query" to "string", "path" to "string"))
         .put(function("global_search_files", "在 Android 共享存储 /storage/emulated/0 下按文件名或路径片段全局搜索文件。仅当 search_files 返回 SEARCH_EMPTY 且用户需要查找工作区外文件时调用一次；不要用它替代工作区内搜索。返回绝对路径。", "query" to "string"))
         .put(function("get_file_info", "获取文件元数据", "path" to "string"))
@@ -2600,7 +2747,7 @@ class OpenAiAgent(
             definitions.put(
                 functionWithOptional(
                     "run_command",
-                    "在 Termux 中执行白名单 Shell 命令，并直接返回 exit_code、stdout、stderr。不要运行不会退出的长期驻留命令；多行脚本或缩进敏感命令优先用 command_lines，每个数组元素是一行，应用会用 \\n 原样拼接。默认等待 60 秒；确实需要更久时传 timeout_seconds，最大 600。",
+                    "在 Termux 中执行白名单 Shell 命令，并直接返回 exit_code、stdout、stderr。下载文件必须优先使用 download_file；仅当原生下载明确失败、被禁用或不支持目标协议时，才把 curl/wget 作为最后备用手段。不要运行不会退出的长期驻留命令；多行脚本或缩进敏感命令优先用 command_lines，每个数组元素是一行，应用会用 \\n 原样拼接。默认等待 60 秒；确实需要更久时传 timeout_seconds，最大 600。",
                     required = emptyList(),
                     optional = listOf("command" to "string", "command_lines" to "array:string", "workDir" to "string", "timeout_seconds" to "integer"),
                 ),
@@ -2647,6 +2794,35 @@ class OpenAiAgent(
         .put(function("get_current_time", "读取设备当前本地时间、时区和时间戳。需要判断今天、近期、搜索时间范围或个性化回答时调用。"))
         .put(function("get_current_location", "读取设备最近一次系统定位。需要按用户所在地区个性化回答或联网搜索地区相关信息时调用；若未授权会返回权限状态。"))
         .put(function("get_device_hardware_info", "硬件检查工具。读取当前 Android 设备的系统、CPU、内存、存储、ABI、分辨率、网络、蓝牙、电池等诊断信息。用于机型问题排查、判断设备硬件是否异常、山寨机线索分析、购机性价比比较等；不要把结果视为绝对鉴定结论。"))
+        .put(
+            functionWithOptional(
+                "list_installed_apps",
+                "读取设备已安装应用列表，返回应用名、包名、版本、APK 大小、用户/系统应用分类及签名证书 SHA-256。scope 可用 all、user、system；应用很多时使用 offset 和 limit 分页。适合排查软件版本、包名、签名或可疑应用。",
+                required = emptyList(),
+                optional = listOf("scope" to "string", "query" to "string", "offset" to "integer", "limit" to "integer"),
+            ),
+        )
+        if (systemCommandExecutor.shouldShowShellTool()) {
+            definitions.put(
+                functionWithOptional(
+                    "execute_shell_command",
+                    "通过 Shizuku 以 Android shell 身份执行系统命令并返回 exit_code、stdout、stderr。每次执行都需要用户确认。可用于 pm list/enable/disable-user/install/uninstall、cmd、dumpsys 和受 shell 权限保护的 /data 路径；先用只读命令检查状态，再执行变更。禁止运行不会退出的交互程序。",
+                    required = emptyList(),
+                    optional = listOf("command" to "string", "command_lines" to "array:string", "timeout_seconds" to "integer"),
+                ),
+            )
+        }
+        if (systemCommandExecutor.shouldShowRootTool()) {
+            definitions.put(
+                functionWithOptional(
+                    "execute_root_command",
+                    "通过用户配置的 su 命令以 Root 身份执行系统命令并返回 exit_code、stdout、stderr。每次执行都需要用户确认。执行卸载系统组件、修改 /data 或系统文件前必须先检查目标和备份方案；Root 不可用时仅在 Shell 开关也开启且已授权时回退到 Shizuku Shell。",
+                    required = emptyList(),
+                    optional = listOf("command" to "string", "command_lines" to "array:string", "timeout_seconds" to "integer"),
+                ),
+            )
+        }
+        definitions
         .put(function("list_ssh_servers", "列出用户已配置且启用的 SSH 服务器。调用 ssh_exec 前必须先调用本工具，使用返回的 id（通常是 host:port）作为 server_id。"))
         .put(
             functionWithOptional(
@@ -3029,6 +3205,7 @@ class OpenAiAgent(
             "global_create_folder",
             "global_delete_file_or_folder",
             "global_rename_move",
+            "download_file",
             "search_files",
             "global_search_files",
             "get_file_info",
@@ -3044,6 +3221,9 @@ class OpenAiAgent(
             "get_current_time",
             "get_current_location",
             "get_device_hardware_info",
+            "list_installed_apps",
+            "execute_shell_command",
+            "execute_root_command",
             "list_ssh_servers",
             "ssh_exec",
             "list_webdav_servers",

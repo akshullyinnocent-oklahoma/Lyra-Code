@@ -15,14 +15,14 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.2.2-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.3.0-blue" />
   <img alt="Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/license-Dual%20License%20%2F%20AGPLv3-orange" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-HTTP%20%2F%20SSE-purple" />
 </p>
 
-Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对话、文件工具、命令执行、联网搜索、MCP、SSH、WebDAV、数据备份和 Skills 能力包整合到移动端，让手机也能承担编程、写作、检索、远程维护和自动化任务。
+Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对话、文件工具、原生文件下载、命令执行、联网搜索、MCP、SSH、WebDAV、数据备份、Skills、设备诊断和用量统计整合到移动端，让手机也能承担编程、写作、检索、远程维护和自动化任务。
 
 ## 界面预览
 
@@ -44,11 +44,21 @@ Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对
 ### Agent 工具
 
 - 文件读取、写入、追加、重命名、移动、删除、目录创建和全局文件搜索。
+- 支持使用应用原生 HTTP/HTTPS 客户端下载文件到工作区或 Android 共享存储，可处理重定向、自定义请求头、超时和可选 SHA-256 校验。
 - 命令执行与 Termux RunCommandService 集成，支持 stdout/stderr 回传。
 - TODO 规划、过程记录、文件变更审查和差异可视化。
 - 联网搜索、网页读取和来源标注。
 - 时间感知、地理感知和配置管理。
 - 多轮工具调用、用户审查确认、当前会话免确认。
+- Agent 会优先使用原生下载工具，仅在原生下载失败或不支持目标协议时才将 Termux `curl` / `wget` 作为备用方案。
+
+### 设备与系统工具
+
+- 手机信息页面可查看厂商、型号、Android 版本、CPU/硬件、ABI、内存、存储、屏幕、网络、蓝牙和电池状态。
+- 硬件检查 Agent 可辅助机型诊断、问题排查和设备硬件对比。
+- 应用列表识别 Agent 可读取应用名、包名、版本、大小、系统/用户应用分类和签名证书 SHA-256。
+- 可选 Shizuku Shell 与 Root 命令工具，支持自定义 `su` 命令、权限回退、完整命令预览和逐次用户确认。
+- 系统级 Agent 工具均可在 AI Agent 设置页面单独禁用。
 
 ### MCP / SSH / WebDAV
 
@@ -77,6 +87,12 @@ Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对
 - 支持本地 zip 备份和 WebDAV 云备份。
 - 支持补充模式导入并尽量去重，降低已有配置和密钥被覆盖的风险。
 - 支持不包含 API Key 的安全导出，也支持包含密钥的完整迁移备份。
+
+### 用量统计
+
+- 统计对话数、消息数、用户输入 Token 和 AI 输出 Token，思维链与工具上下文也计入对应统计。
+- 使用离线 Token 估算工具，不依赖网络服务。
+- 支持日、周、月、年、总计以及历史日期和时间段查询。
 
 ### 沉浸扮演模式
 

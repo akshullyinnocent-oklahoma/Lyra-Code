@@ -159,8 +159,8 @@ class AppSettings(context: Context) {
         set(value) = plainPrefs.edit().putString(KEY_FONT_SCALE_MODE, value).apply()
 
     var customFontScale: Float
-        get() = plainPrefs.getFloat(KEY_CUSTOM_FONT_SCALE, 1.0f).coerceIn(0.85f, 1.35f)
-        set(value) = plainPrefs.edit().putFloat(KEY_CUSTOM_FONT_SCALE, value.coerceIn(0.85f, 1.35f)).apply()
+        get() = plainPrefs.getFloat(KEY_CUSTOM_FONT_SCALE, 1.0f).coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+        set(value) = plainPrefs.edit().putFloat(KEY_CUSTOM_FONT_SCALE, value.coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)).apply()
 
     fun effectiveFontScale(systemFontScale: Float): Float = when (fontScaleMode) {
         FONT_SCALE_SMALL -> 0.9f
@@ -169,7 +169,25 @@ class AppSettings(context: Context) {
         FONT_SCALE_EXTRA_LARGE -> 1.25f
         FONT_SCALE_CUSTOM -> customFontScale
         else -> systemFontScale
-    }.coerceIn(0.85f, 1.35f)
+    }.coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
+
+    var requestRootAccess: Boolean
+        get() = plainPrefs.getBoolean(KEY_REQUEST_ROOT_ACCESS, false)
+        set(value) = plainPrefs.edit().putBoolean(KEY_REQUEST_ROOT_ACCESS, value).apply()
+
+    var requestShellAccess: Boolean
+        get() = plainPrefs.getBoolean(KEY_REQUEST_SHELL_ACCESS, false)
+        set(value) = plainPrefs.edit().putBoolean(KEY_REQUEST_SHELL_ACCESS, value).apply()
+
+    var customSuCommand: String
+        get() = plainPrefs.getString(KEY_CUSTOM_SU_COMMAND, DEFAULT_SU_COMMAND)
+            .orEmpty()
+            .trim()
+            .ifBlank { DEFAULT_SU_COMMAND }
+        set(value) = plainPrefs.edit().putString(
+            KEY_CUSTOM_SU_COMMAND,
+            value.trim().ifBlank { DEFAULT_SU_COMMAND },
+        ).apply()
 
     var userNickname: String
         get() = plainPrefs.getString(KEY_USER_NICKNAME, "用户").orEmpty().ifBlank { "用户" }
@@ -986,6 +1004,9 @@ class AppSettings(context: Context) {
             .put("dynamicColorEnabled", dynamicColorEnabled)
             .put("fontScaleMode", fontScaleMode)
             .put("customFontScale", customFontScale.toDouble())
+            .put("requestRootAccess", requestRootAccess)
+            .put("requestShellAccess", requestShellAccess)
+            .put("customSuCommand", customSuCommand)
             .put("userNickname", userNickname)
             .put("userAvatarPath", userAvatarPath.orEmpty())
             .put("hideTermuxPermissionHint", hideTermuxPermissionHint)
@@ -1065,6 +1086,9 @@ class AppSettings(context: Context) {
         if (root.has("dynamicColorEnabled")) dynamicColorEnabled = root.optBoolean("dynamicColorEnabled")
         root.optString("fontScaleMode").takeIf { it.isNotBlank() }?.let { fontScaleMode = it }
         if (root.has("customFontScale")) customFontScale = root.optDouble("customFontScale", 1.0).toFloat()
+        if (root.has("requestRootAccess")) requestRootAccess = root.optBoolean("requestRootAccess")
+        if (root.has("requestShellAccess")) requestShellAccess = root.optBoolean("requestShellAccess")
+        root.optString("customSuCommand").takeIf { it.isNotBlank() }?.let { customSuCommand = it }
         root.optString("userNickname").takeIf { it.isNotBlank() }?.let { userNickname = it }
         root.optString("userAvatarPath").takeIf { it.isNotBlank() }?.let { userAvatarPath = it }
         if (root.has("hideTermuxPermissionHint")) hideTermuxPermissionHint = root.optBoolean("hideTermuxPermissionHint")
@@ -1391,6 +1415,9 @@ class AppSettings(context: Context) {
         private const val KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
         private const val KEY_FONT_SCALE_MODE = "font_scale_mode"
         private const val KEY_CUSTOM_FONT_SCALE = "custom_font_scale"
+        private const val KEY_REQUEST_ROOT_ACCESS = "request_root_access"
+        private const val KEY_REQUEST_SHELL_ACCESS = "request_shell_access"
+        private const val KEY_CUSTOM_SU_COMMAND = "custom_su_command"
         private const val KEY_USER_NICKNAME = "user_nickname"
         private const val KEY_USER_AVATAR_PATH = "user_avatar_path"
         private const val KEY_HIDE_TERMUX_PERMISSION_HINT = "hide_termux_permission_hint"
@@ -1431,6 +1458,10 @@ class AppSettings(context: Context) {
         const val FONT_SCALE_LARGE = "large"
         const val FONT_SCALE_EXTRA_LARGE = "extra_large"
         const val FONT_SCALE_CUSTOM = "custom"
+        const val MIN_FONT_SCALE = 0.5f
+        const val MAX_FONT_SCALE = 2.5f
+        const val FONT_SCALE_STEP = 0.025f
+        const val DEFAULT_SU_COMMAND = "su -c"
         const val REASONING_AUTO = "auto"
         const val REASONING_LOW = "low"
         const val REASONING_MEDIUM = "medium"

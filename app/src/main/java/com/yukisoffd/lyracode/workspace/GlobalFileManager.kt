@@ -3,6 +3,7 @@ package com.yukisoffd.lyracode.workspace
 import android.os.Environment
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.InputStream
 
 class GlobalFileManager {
     fun listDirectory(path: String = ""): Result<List<WorkspaceFile>> = runCatching {
@@ -40,6 +41,14 @@ class GlobalFileManager {
         file.parentFile?.mkdirs()
         file.writeText(content)
         "已写入 ${content.length} 字符: ${file.toPublicPath()}"
+    }
+
+    fun writeStream(path: String, input: InputStream): Result<Long> = runCatching {
+        val file = resolveForWrite(path)
+        file.parentFile?.mkdirs()
+        file.outputStream().buffered().use { output ->
+            input.copyTo(output)
+        }
     }
 
     fun appendFile(path: String, content: String): Result<String> = runCatching {

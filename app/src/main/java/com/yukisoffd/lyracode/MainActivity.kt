@@ -176,6 +176,7 @@ import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
+import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.TransferProgress
 import com.yukisoffd.lyracode.webdav.WebDavClient
@@ -217,9 +218,10 @@ class MainActivity : ComponentActivity() {
         val responseCache = AiResponseCache(cacheDir)
         val mcpClientManager = McpClientManager(settings)
         val sshExecutor = SshExecutor(settings)
+        val systemCommandExecutor = SystemCommandExecutor(this, settings)
         val webDavClient = WebDavClient()
         val backupManager = BackupManager(this, settings, conversationStore)
-        val agent = OpenAiAgent(this, settings, conversationStore, nativeFileManager, globalFileManager, termuxExecutor, workspaceManager, webAgent, mcpClientManager, sshExecutor, webDavClient, backupManager, responseCache)
+        val agent = OpenAiAgent(this, settings, conversationStore, nativeFileManager, globalFileManager, termuxExecutor, workspaceManager, webAgent, mcpClientManager, sshExecutor, systemCommandExecutor, webDavClient, backupManager, responseCache)
         val chatController = ChatController(settings, conversationStore, uploadedFileManager, agent)
         controller = chatController
 
@@ -237,7 +239,7 @@ class MainActivity : ComponentActivity() {
                 AppSettings.FONT_SCALE_EXTRA_LARGE -> 1.25f
                 AppSettings.FONT_SCALE_CUSTOM -> customFontScale
                 else -> systemFontScale
-            }.coerceIn(0.85f, 1.35f)
+            }.coerceIn(AppSettings.MIN_FONT_SCALE, AppSettings.MAX_FONT_SCALE)
             val darkMode = when (themeMode) {
                 AppSettings.THEME_LIGHT -> false
                 AppSettings.THEME_DARK -> true
@@ -255,6 +257,7 @@ class MainActivity : ComponentActivity() {
                     termuxExecutor = termuxExecutor,
                     mcpClientManager = mcpClientManager,
                     sshExecutor = sshExecutor,
+                    systemCommandExecutor = systemCommandExecutor,
                     webDavClient = webDavClient,
                     backupManager = backupManager,
                     controller = chatController,

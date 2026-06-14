@@ -17,6 +17,7 @@ json = "20250517"
 jsch = "0.2.21"
 jlatexmath = "e758f14"
 jetbrainsMarkdown = "66a56dffca"
+shizuku = "13.1.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -40,6 +41,8 @@ json = { group = "org.json", name = "json", version.ref = "json" }
 jsch = { group = "com.github.mwiede", name = "jsch", version.ref = "jsch" }
 jlatexmath = { module = "com.github.Soffd.jlatexmath-android:jlatexmath", version.ref = "jlatexmath" }
 jetbrains-markdown = { module = "com.github.rikkahub:markdown", version.ref = "jetbrainsMarkdown" }
+shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
+shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
