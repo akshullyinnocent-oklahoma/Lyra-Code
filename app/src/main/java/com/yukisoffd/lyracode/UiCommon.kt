@@ -261,7 +261,7 @@ internal fun LyraCodeTheme(
     } else {
         baseScheme
     }
-    CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale.coerceIn(0.85f, 1.35f))) {
+    CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale.coerceIn(AppSettings.MIN_FONT_SCALE, AppSettings.MAX_FONT_SCALE))) {
         MaterialTheme(colorScheme = colorScheme, content = content)
     }
 }

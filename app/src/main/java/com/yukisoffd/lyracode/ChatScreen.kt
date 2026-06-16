@@ -214,16 +214,18 @@ import kotlin.math.abs
 import android.graphics.Canvas as AndroidCanvas
 
 @Composable
-internal fun Modifier.keyboardAwareInputPadding(): Modifier {
+internal fun rememberAnimatedKeyboardAvoidanceOffsetPx(): Int {
     val targetOffsetPx = rememberKeyboardAvoidanceOffsetPx()
     val bottomOffsetPx by animateIntAsState(
         targetValue = targetOffsetPx,
         animationSpec = tween(durationMillis = 180),
         label = "keyboardAvoidanceOffset",
     )
-    return offset {
-        IntOffset(x = 0, y = -bottomOffsetPx)
-    }
+    return bottomOffsetPx
+}
+
+internal fun Modifier.keyboardAwareInputOffset(bottomOffsetPx: Int): Modifier {
+    return offset { IntOffset(x = 0, y = -bottomOffsetPx) }
 }
 
 @Composable
@@ -343,12 +345,15 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val keyboardLiftPx = rememberAnimatedKeyboardAvoidanceOffsetPx()
+    val keyboardLiftDp = with(LocalDensity.current) { keyboardLiftPx.toDp() }
     val messageSnapshot = controller.messages.value
     val renderItems = remember(messageSnapshot) { chatRenderItems(messageSnapshot) }
     val pendingUploads = controller.pendingUploads
     val canSend = (input.isNotBlank() || pendingUploads.isNotEmpty()) && !controller.isActiveConversationRunning()
     val isRunning = controller.isActiveConversationRunning()
     var autoFollowOutput by remember(controller.activeConversationId.value) { mutableStateOf(true) }
+    var keyboardShouldLiftOutput by remember(controller.activeConversationId.value) { mutableStateOf(false) }
     val isInterrupted = controller.activeConversation()?.status == ConversationStore.STATUS_INTERRUPTED
     val termuxPermissionGranted = termuxExecutor.hasRunCommandPermission()
     var hideTermuxHint by remember { mutableStateOf(settings.hideTermuxPermissionHint) }
@@ -433,6 +438,8 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             canSend = canSend,
             isRunning = isRunning,
             listState = listState,
+            keyboardLiftPx = keyboardLiftPx,
+            keyboardLiftDp = keyboardLiftDp,
             onOpenMenu = {
                 attachmentMenuPage = "root"
                 attachmentMenuOpen = true
@@ -473,6 +480,13 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                 }
             }
         }
+        LaunchedEffect(keyboardLiftPx, isNearOutputEnd) {
+            if (keyboardLiftPx == 0) {
+                keyboardShouldLiftOutput = isNearOutputEnd
+            } else if (isNearOutputEnd) {
+                keyboardShouldLiftOutput = true
+            }
+        }
         LaunchedEffect(isRunning, isNearOutputEnd, listState.isScrollInProgress) {
             when {
                 isNearOutputEnd -> autoFollowOutput = true
@@ -481,6 +495,11 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
         }
         LaunchedEffect(messageSnapshot.lastOrNull()?.id, messageSnapshot.lastOrNull()?.content?.length, messageSnapshot.lastOrNull()?.thinking?.length) {
             if (messageSnapshot.isNotEmpty() && (autoFollowOutput || isNearOutputEnd)) {
+                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            }
+        }
+        LaunchedEffect(keyboardLiftPx) {
+            if (keyboardLiftPx > 0 && messageSnapshot.isNotEmpty() && keyboardShouldLiftOutput) {
                 listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
             }
         }
@@ -498,6 +517,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = if (keyboardShouldLiftOutput) keyboardLiftDp else 0.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
                 if (messageSnapshot.isEmpty()) {
@@ -552,7 +572,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             Text(statusLine, color = KimiMuted, style = MaterialTheme.typography.labelMedium)
         }
         Card(
-            Modifier.fillMaxWidth().keyboardAwareInputPadding(),
+            Modifier.fillMaxWidth().keyboardAwareInputOffset(keyboardLiftPx),
             shape = RoundedCornerShape(28.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
@@ -631,6 +651,8 @@ internal fun RoleplayChatScreen(
     canSend: Boolean,
     isRunning: Boolean,
     listState: androidx.compose.foundation.lazy.LazyListState,
+    keyboardLiftPx: Int,
+    keyboardLiftDp: androidx.compose.ui.unit.Dp,
     onOpenMenu: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -654,6 +676,30 @@ internal fun RoleplayChatScreen(
         roleMessages.filterNot { it.id == streamingAssistantId && it.role == "assistant" }
     }
     val scope = rememberCoroutineScope()
+    var keyboardShouldLiftOutput by remember(controller.activeConversationId.value) { mutableStateOf(false) }
+    val isNearOutputEnd by remember {
+        derivedStateOf {
+            val total = listState.layoutInfo.totalItemsCount
+            if (total == 0) {
+                true
+            } else {
+                val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                val bottomDistance = if (last != null && last.index == total - 1) {
+                    listState.layoutInfo.viewportEndOffset - (last.offset + last.size)
+                } else {
+                    Int.MIN_VALUE
+                }
+                !listState.canScrollForward || bottomDistance >= -220
+            }
+        }
+    }
+    LaunchedEffect(keyboardLiftPx, isNearOutputEnd) {
+        if (keyboardLiftPx == 0) {
+            keyboardShouldLiftOutput = isNearOutputEnd
+        } else if (isNearOutputEnd) {
+            keyboardShouldLiftOutput = true
+        }
+    }
     val affection = settings.roleplayAffection(roleplayId)
     var affectionDelta by remember { mutableStateOf("") }
     val lastRoleplayTool = messageSnapshot.lastOrNull { it.role == "tool" && it.content.contains("lyra_roleplay_state_v1") }
@@ -671,7 +717,12 @@ internal fun RoleplayChatScreen(
         }
     }
     LaunchedEffect(visibleMessages.size, visibleMessages.lastOrNull()?.content?.length, isRunning) {
-        if (visibleMessages.isNotEmpty() && !listState.isScrollInProgress) {
+        if (visibleMessages.isNotEmpty() && !listState.isScrollInProgress && isNearOutputEnd) {
+            listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
+    LaunchedEffect(keyboardLiftPx) {
+        if (keyboardLiftPx > 0 && visibleMessages.isNotEmpty() && keyboardShouldLiftOutput) {
             listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
         }
     }
@@ -697,7 +748,7 @@ internal fun RoleplayChatScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp + (if (keyboardShouldLiftOutput) keyboardLiftDp else 0.dp)),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     if (visibleMessages.isEmpty()) {
@@ -745,7 +796,7 @@ internal fun RoleplayChatScreen(
                 }
             }
             Card(
-                Modifier.fillMaxWidth().keyboardAwareInputPadding(),
+                Modifier.fillMaxWidth().keyboardAwareInputOffset(keyboardLiftPx),
                 shape = RoundedCornerShape(28.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)),
             ) {

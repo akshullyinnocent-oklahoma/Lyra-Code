@@ -177,6 +177,8 @@ import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
+import com.yukisoffd.lyracode.tasks.DownloadTaskManager
+import com.yukisoffd.lyracode.tasks.ScheduledTaskManager
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.TransferProgress
 import com.yukisoffd.lyracode.webdav.WebDavClient
@@ -212,6 +214,13 @@ class MainActivity : ComponentActivity() {
         val workspaceManager = WorkspaceManager(this, settings)
         val nativeFileManager = NativeFileManager(this, workspaceManager)
         val globalFileManager = GlobalFileManager()
+        val downloadTaskManager = DownloadTaskManager.getInstance(
+            this,
+            settings,
+            nativeFileManager,
+            globalFileManager,
+        )
+        val scheduledTaskManager = ScheduledTaskManager.getInstance(this)
         val termuxExecutor = TermuxExecutor(this, auditLogStore)
         val uploadedFileManager = UploadedFileManager(this)
         val webAgent = WebViewWebAgent(this)
@@ -221,17 +230,21 @@ class MainActivity : ComponentActivity() {
         val systemCommandExecutor = SystemCommandExecutor(this, settings)
         val webDavClient = WebDavClient()
         val backupManager = BackupManager(this, settings, conversationStore)
-        val agent = OpenAiAgent(this, settings, conversationStore, nativeFileManager, globalFileManager, termuxExecutor, workspaceManager, webAgent, mcpClientManager, sshExecutor, systemCommandExecutor, webDavClient, backupManager, responseCache)
+        val agent = OpenAiAgent(this, settings, conversationStore, nativeFileManager, globalFileManager, termuxExecutor, workspaceManager, webAgent, mcpClientManager, sshExecutor, systemCommandExecutor, webDavClient, backupManager, downloadTaskManager, scheduledTaskManager, responseCache)
         val chatController = ChatController(settings, conversationStore, uploadedFileManager, agent)
         controller = chatController
 
         setContent {
             var themeMode by remember { mutableStateOf(settings.themeMode) }
             var dynamicColorEnabled by remember { mutableStateOf(settings.dynamicColorEnabled) }
+            var refreshRateMode by remember { mutableStateOf(settings.refreshRateMode) }
             var fontScaleMode by remember { mutableStateOf(settings.fontScaleMode) }
             var customFontScale by remember { mutableStateOf(settings.customFontScale) }
             val systemDark = isSystemInDarkTheme()
             val systemFontScale = LocalDensity.current.fontScale
+            LaunchedEffect(refreshRateMode) {
+                applyPreferredRefreshRate(refreshRateMode)
+            }
             val effectiveFontScale = when (fontScaleMode) {
                 AppSettings.FONT_SCALE_SMALL -> 0.9f
                 AppSettings.FONT_SCALE_NORMAL -> 1.0f
@@ -260,6 +273,8 @@ class MainActivity : ComponentActivity() {
                     systemCommandExecutor = systemCommandExecutor,
                     webDavClient = webDavClient,
                     backupManager = backupManager,
+                    downloadTaskManager = downloadTaskManager,
+                    scheduledTaskManager = scheduledTaskManager,
                     controller = chatController,
                     themeMode = themeMode,
                     onThemeModeChange = {
@@ -271,6 +286,11 @@ class MainActivity : ComponentActivity() {
                     onDynamicColorChange = {
                         dynamicColorEnabled = it
                         settings.dynamicColorEnabled = it
+                    },
+                    refreshRateMode = refreshRateMode,
+                    onRefreshRateModeChange = {
+                        refreshRateMode = it
+                        settings.refreshRateMode = it
                     },
                     fontScaleMode = fontScaleMode,
                     customFontScale = customFontScale,
@@ -290,6 +310,21 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         controller?.close()
         super.onDestroy()
+    }
+
+    private fun applyPreferredRefreshRate(mode: String) {
+        val preferredRate = when (mode) {
+            AppSettings.REFRESH_RATE_30 -> 30f
+            AppSettings.REFRESH_RATE_60 -> 60f
+            AppSettings.REFRESH_RATE_90 -> 90f
+            AppSettings.REFRESH_RATE_120 -> 120f
+            else -> 0f
+        }
+        val attrs = window.attributes
+        if (attrs.preferredRefreshRate != preferredRate) {
+            attrs.preferredRefreshRate = preferredRate
+            window.attributes = attrs
+        }
     }
 
     companion object {

@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.3.0-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.4.1-blue" />
   <img alt="Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/license-Dual%20License%20%2F%20AGPLv3-orange" />
@@ -80,6 +80,13 @@ Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对
 - 支持用户和 AI 发送图片/视频的缩略图、预览和保存。
 - 支持 Markdown、表格、代码块、LaTeX 数学公式和媒体 Data URL 渲染。
 - 支持 AI 生成或返回的 base64、URL、本地媒体文件预览与另存。
+
+### 主题与显示
+
+- 支持浅色、深色和跟随系统主题。
+- 支持 Material You 动态配色，只调整颜色，不改变应用布局。
+- 支持字体大小调节、实时预览、跟随系统和更宽的自定义范围。
+- 支持刷新率偏好设置：跟随系统智能刷新率、30 Hz、60 Hz、90 Hz、120 Hz。最终是否生效仍取决于设备屏幕和 Android 系统策略。
 
 ### 数据与备份
 

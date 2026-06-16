@@ -623,5 +623,6 @@ class ConversationStore(context: Context) : SQLiteOpenHelper(
         const val STATUS_INTERRUPTED = "interrupted"
         const val MODE_NORMAL = "normal"
         const val MODE_ROLEPLAY = "roleplay"
+        const val MODE_TASK = "task"
     }
 }

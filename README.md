@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.3.0-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.4.1-blue" />
   <img alt="Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/license-Dual%20License%20%2F%20AGPLv3-orange" />
@@ -80,6 +80,13 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 - Thumbnail preview, full-screen preview, and save support for user/AI images and videos.
 - Markdown, tables, code blocks, LaTeX math, and media Data URL rendering.
 - Preview and save AI-returned base64 media, remote URLs, and local media files.
+
+### Theme and Display
+
+- Light, dark, and system-following theme modes.
+- Optional Material You dynamic color, applying wallpaper-derived colors without changing the app layout.
+- Adjustable font size with live preview, system-following mode, and a wider custom range.
+- Refresh-rate preference: system smart mode, 30 Hz, 60 Hz, 90 Hz, or 120 Hz. The final effective rate still depends on device and Android display policy.
 
 ### Data and Backup
 

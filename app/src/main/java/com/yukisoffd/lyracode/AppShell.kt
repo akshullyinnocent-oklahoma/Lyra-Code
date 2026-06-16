@@ -180,6 +180,8 @@ import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
+import com.yukisoffd.lyracode.tasks.DownloadTaskManager
+import com.yukisoffd.lyracode.tasks.ScheduledTaskManager
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.TransferProgress
 import com.yukisoffd.lyracode.webdav.WebDavClient
@@ -197,12 +199,19 @@ import java.text.SimpleDateFormat
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URL
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.max
 import kotlin.math.abs
 import android.graphics.Canvas as AndroidCanvas
+
+private const val PAGE_CHAT = 0
+private const val PAGE_LOG = 1
+private const val PAGE_STATS = 2
+private const val PAGE_TASKS = 3
+private const val PAGE_SETTINGS = 4
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -216,18 +225,22 @@ internal fun LyraCodeApp(
     systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
     backupManager: BackupManager,
+    downloadTaskManager: DownloadTaskManager,
+    scheduledTaskManager: ScheduledTaskManager,
     controller: ChatController,
     themeMode: String,
     onThemeModeChange: (String) -> Unit,
     dynamicColorEnabled: Boolean,
     onDynamicColorChange: (Boolean) -> Unit,
+    refreshRateMode: String,
+    onRefreshRateModeChange: (String) -> Unit,
     fontScaleMode: String,
     customFontScale: Float,
     onFontScaleModeChange: (String) -> Unit,
     onCustomFontScaleChange: (Float) -> Unit,
 ) {
-    val pages = listOf("AI 对话", "日志", "设置", "统计")
-    var selectedPage by rememberSaveable { mutableIntStateOf(0) }
+    val pages = listOf("AI 对话", "日志", "统计", "任务", "设置")
+    var selectedPage by rememberSaveable { mutableIntStateOf(PAGE_CHAT) }
     val safeSelectedPage = selectedPage.coerceIn(0, pages.lastIndex)
     val controllerStatus = controller.status.value
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -246,7 +259,7 @@ internal fun LyraCodeApp(
     var settingsBackRequest by remember { mutableIntStateOf(0) }
     fun requestNewConversation() {
         if (controller.requestNewConversation()) {
-            selectedPage = 0
+            selectedPage = PAGE_CHAT
         } else {
             appNotice = "你已在新对话中，无需重复操作"
         }
@@ -257,16 +270,16 @@ internal fun LyraCodeApp(
         if (message.isNotBlank()) appNotice = message
     }
     LaunchedEffect(safeSelectedPage) {
-        if (safeSelectedPage != 2) settingsDetailTitle = null
+        if (safeSelectedPage != PAGE_SETTINGS) settingsDetailTitle = null
     }
-    BackHandler(enabled = safeSelectedPage == 2 && settingsDetailTitle != null && !drawerState.isOpen) {
+    BackHandler(enabled = safeSelectedPage == PAGE_SETTINGS && settingsDetailTitle != null && !drawerState.isOpen) {
         settingsBackRequest++
     }
-    BackHandler(enabled = safeSelectedPage != 0 && !(safeSelectedPage == 2 && settingsDetailTitle != null) && !drawerState.isOpen) {
-        selectedPage = 0
+    BackHandler(enabled = safeSelectedPage != PAGE_CHAT && !(safeSelectedPage == PAGE_SETTINGS && settingsDetailTitle != null) && !drawerState.isOpen) {
+        selectedPage = PAGE_CHAT
     }
     BackHandler(enabled = drawerState.isOpen) {
-        selectedPage = 0
+        selectedPage = PAGE_CHAT
         scope.launch { drawerState.close() }
     }
     val treeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
@@ -334,7 +347,7 @@ internal fun LyraCodeApp(
                     },
                     onSelectConversation = { id ->
                         controller.selectConversation(id)
-                        selectedPage = 0
+                        selectedPage = PAGE_CHAT
                         scope.launch { drawerState.close() }
                     },
                 )
@@ -354,7 +367,7 @@ internal fun LyraCodeApp(
                     navigationIcon = {
                         IconButton(
                             onClick = {
-                                if (safeSelectedPage == 2 && settingsDetailTitle != null) {
+                                if (safeSelectedPage == PAGE_SETTINGS && settingsDetailTitle != null) {
                                     settingsBackRequest++
                                 } else {
                                     scope.launch { drawerState.open() }
@@ -362,7 +375,7 @@ internal fun LyraCodeApp(
                             },
                             modifier = Modifier.width(64.dp),
                         ) {
-                            if (safeSelectedPage == 2 && settingsDetailTitle != null) {
+                            if (safeSelectedPage == PAGE_SETTINGS && settingsDetailTitle != null) {
                                 Icon(Icons.Default.ArrowBack, contentDescription = "返回")
                             } else {
                                 Icon(Icons.Default.Menu, contentDescription = "菜单")
@@ -370,7 +383,7 @@ internal fun LyraCodeApp(
                         }
                     },
                     title = {
-                        if (safeSelectedPage == 0) {
+                        if (safeSelectedPage == PAGE_CHAT) {
                             if (controller.isRoleplayMode()) {
                                 val scenario = settings.roleplayScenario(controller.currentRoleplayId())
                                 val roleplayBusy = controller.isActiveConversationRunning() || controllerStatus.startsWith("运行") || controllerStatus.startsWith("等待") || controllerStatus.contains("工具") || controllerStatus.contains("继续")
@@ -410,7 +423,7 @@ internal fun LyraCodeApp(
                             }
                         } else {
                             Text(
-                                if (safeSelectedPage == 2) settingsDetailTitle ?: "设置" else pages[safeSelectedPage],
+                                if (safeSelectedPage == PAGE_SETTINGS) settingsDetailTitle ?: "设置" else pages[safeSelectedPage],
                                 style = MaterialTheme.typography.titleLarge,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -418,7 +431,7 @@ internal fun LyraCodeApp(
                         }
                     },
                     actions = {
-                        if (safeSelectedPage == 0 && !controller.isRoleplayMode()) {
+                        if (safeSelectedPage == PAGE_CHAT && !controller.isRoleplayMode()) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { treeLauncher.launch(null) }) {
                                     PlusBadgeIcon(
@@ -449,9 +462,11 @@ internal fun LyraCodeApp(
                     label = "page-transition",
                 ) { page ->
                     when (page) {
-                        0 -> ChatScreen(controller, settings, termuxExecutor)
-                        1 -> LogScreen(auditLogStore)
-                        2 -> SettingsScreen(
+                        PAGE_CHAT -> ChatScreen(controller, settings, termuxExecutor)
+                        PAGE_LOG -> LogScreen(auditLogStore)
+                        PAGE_STATS -> UsageStatsScreen(controller)
+                        PAGE_TASKS -> TaskScreen(settings, downloadTaskManager, scheduledTaskManager)
+                        PAGE_SETTINGS -> SettingsScreen(
                             settings = settings,
                             controller = controller,
                             workspaceManager = workspaceManager,
@@ -469,6 +484,8 @@ internal fun LyraCodeApp(
                             onThemeModeChange = onThemeModeChange,
                             dynamicColorEnabled = dynamicColorEnabled,
                             onDynamicColorChange = onDynamicColorChange,
+                            refreshRateMode = refreshRateMode,
+                            onRefreshRateModeChange = onRefreshRateModeChange,
                             fontScaleMode = fontScaleMode,
                             customFontScale = customFontScale,
                             onFontScaleModeChange = onFontScaleModeChange,
@@ -501,7 +518,6 @@ internal fun LyraCodeApp(
                                 skillsRevision++
                             },
                         )
-                        3 -> UsageStatsScreen(controller)
                     }
                 }
                 TransientNotice(
@@ -544,6 +560,9 @@ internal fun KimiDrawerContent(
                     it.status.contains(query, ignoreCase = true)
             }
         }
+    }
+    val groupedConversations = remember(filteredConversations) {
+        groupConversationsByTime(filteredConversations)
     }
     var editingProfile by rememberSaveable { mutableStateOf(false) }
     actionConversation?.let { conversation ->
@@ -616,10 +635,11 @@ internal fun KimiDrawerContent(
                         icon = when (index) {
                             0 -> Icons.Default.Chat
                             1 -> Icons.Default.ReceiptLong
-                            2 -> Icons.Default.Settings
-                            3 -> Icons.Default.Analytics
-                            4 -> Icons.Default.School
-                            5 -> Icons.Default.Description
+                            2 -> Icons.Default.Analytics
+                            3 -> Icons.Default.TaskAlt
+                            4 -> Icons.Default.Settings
+                            5 -> Icons.Default.School
+                            6 -> Icons.Default.Description
                             else -> Icons.Default.Info
                         },
                         title = page,
@@ -659,33 +679,84 @@ internal fun KimiDrawerContent(
                     }
                 }
                 KimiDivider()
-                Text("最近", color = KimiMuted, style = MaterialTheme.typography.titleSmall)
                 if (filteredConversations.isEmpty()) {
                     Text("暂无会话", color = KimiMuted)
                 }
             }
         }
-        items(filteredConversations, key = { it.id }) { conversation ->
-            KimiConversationRow(
-                conversation = conversation,
-                selected = controller.activeConversationId.value == conversation.id,
-                multiSelected = conversation.id in selectedHistoryIds,
-                selectionMode = selectedHistoryIds.isNotEmpty(),
-                onSelect = {
-                    if (selectedHistoryIds.isEmpty()) {
-                        onSelectConversation(conversation.id)
-                    } else {
-                        selectedHistoryIds = if (conversation.id in selectedHistoryIds) {
-                            selectedHistoryIds - conversation.id
+        groupedConversations.forEach { (label, conversations) ->
+            item(key = "history-group-$label") {
+                Text(
+                    label,
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp)
+                        .padding(top = 2.dp),
+                )
+            }
+            items(conversations, key = { it.id }) { conversation ->
+                KimiConversationRow(
+                    conversation = conversation,
+                    selected = controller.activeConversationId.value == conversation.id,
+                    multiSelected = conversation.id in selectedHistoryIds,
+                    selectionMode = selectedHistoryIds.isNotEmpty(),
+                    onSelect = {
+                        if (selectedHistoryIds.isEmpty()) {
+                            onSelectConversation(conversation.id)
                         } else {
-                            selectedHistoryIds + conversation.id
+                            selectedHistoryIds = if (conversation.id in selectedHistoryIds) {
+                                selectedHistoryIds - conversation.id
+                            } else {
+                                selectedHistoryIds + conversation.id
+                            }
                         }
-                    }
-                },
-                onLongPress = { actionConversation = conversation },
-            )
+                    },
+                    onLongPress = { actionConversation = conversation },
+                )
+            }
         }
     }
+}
+
+private fun groupConversationsByTime(
+    conversations: List<Conversation>,
+    nowMillis: Long = System.currentTimeMillis(),
+): List<Pair<String, List<Conversation>>> {
+    if (conversations.isEmpty()) return emptyList()
+    val calendar = Calendar.getInstance()
+    fun startOfDay(time: Long): Long = calendar.run {
+        timeInMillis = time
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        timeInMillis
+    }
+    val todayStart = startOfDay(nowMillis)
+    calendar.timeInMillis = todayStart
+    calendar.add(Calendar.DAY_OF_YEAR, -1)
+    val yesterdayStart = calendar.timeInMillis
+    calendar.timeInMillis = todayStart
+    calendar.add(Calendar.DAY_OF_YEAR, -7)
+    val weekStart = calendar.timeInMillis
+    calendar.timeInMillis = todayStart
+    calendar.add(Calendar.MONTH, -1)
+    val monthStart = calendar.timeInMillis
+
+    val groups = linkedMapOf<String, MutableList<Conversation>>()
+    conversations.forEach { conversation ->
+        val label = when {
+            conversation.pinnedAt > 0L -> "置顶"
+            conversation.updatedAt >= todayStart -> "今天"
+            conversation.updatedAt >= yesterdayStart -> "昨天"
+            conversation.updatedAt >= weekStart -> "一周内"
+            conversation.updatedAt >= monthStart -> "一月内"
+            else -> SimpleDateFormat("yyyy年M月", Locale.getDefault()).format(Date(conversation.updatedAt))
+        }
+        groups.getOrPut(label) { mutableListOf() }.add(conversation)
+    }
+    return groups.map { it.key to it.value }
 }
 
 @Composable

@@ -120,6 +120,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -162,6 +163,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -240,6 +242,8 @@ internal fun SettingsScreen(
     onThemeModeChange: (String) -> Unit,
     dynamicColorEnabled: Boolean,
     onDynamicColorChange: (Boolean) -> Unit,
+    refreshRateMode: String,
+    onRefreshRateModeChange: (String) -> Unit,
     fontScaleMode: String,
     customFontScale: Float,
     onFontScaleModeChange: (String) -> Unit,
@@ -258,7 +262,11 @@ internal fun SettingsScreen(
     var detail by rememberSaveable { mutableStateOf<String?>(null) }
     val settingsListScroll = rememberScrollState()
     fun navigateBackFromDetail() {
-        detail = if (detail == "device") "about" else null
+        detail = when (detail) {
+            "device" -> "about"
+            "font", "refresh_rate" -> "theme"
+            else -> null
+        }
     }
     BackHandler(enabled = detail != null) { navigateBackFromDetail() }
     LaunchedEffect(detail) {
@@ -270,7 +278,14 @@ internal fun SettingsScreen(
     AnimatedContent(
         targetState = detail,
         transitionSpec = {
-            val forward = targetState != null
+            val forward = when {
+                initialState == "device" && targetState == "about" -> false
+                initialState == "about" && targetState == "device" -> true
+                initialState in setOf("font", "refresh_rate") && targetState == "theme" -> false
+                initialState == "theme" && targetState in setOf("font", "refresh_rate") -> true
+                targetState == null -> false
+                else -> true
+            }
             slideInHorizontally(animationSpec = tween(260)) { fullWidth -> if (forward) fullWidth else -fullWidth / 3 } togetherWith
                 slideOutHorizontally(animationSpec = tween(260)) { fullWidth -> if (forward) -fullWidth / 3 else fullWidth }
         },
@@ -289,9 +304,16 @@ internal fun SettingsScreen(
                         onThemeModeChange = onThemeModeChange,
                         dynamicColorEnabled = dynamicColorEnabled,
                         onDynamicColorChange = onDynamicColorChange,
+                        refreshRateMode = refreshRateMode,
+                        onRefreshRateModeChange = onRefreshRateModeChange,
                         fontScaleMode = fontScaleMode,
                         customFontScale = customFontScale,
                         onOpenFontSettings = { detail = "font" },
+                        onOpenRefreshRateSettings = { detail = "refresh_rate" },
+                    )
+                    "refresh_rate" -> RefreshRateSettings(
+                        refreshRateMode = refreshRateMode,
+                        onRefreshRateModeChange = onRefreshRateModeChange,
                     )
                     "font" -> FontSizeSettings(
                         fontScaleMode = fontScaleMode,
@@ -366,7 +388,7 @@ internal fun SettingsScreen(
                 KimiMenuRow(
                     Icons.Default.Palette,
                     "主题设置",
-                    "当前：${themeName(themeMode)} · ${fontScaleName(fontScaleMode, customFontScale)}",
+                    "当前：${themeName(themeMode)} · ${refreshRateName(refreshRateMode)} · ${fontScaleName(fontScaleMode, customFontScale)}",
                 ) { detail = "theme" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.EditNote, "系统提示词", "配置不同用途的默认提示词") { detail = "prompts" }
@@ -427,6 +449,7 @@ internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "workspace" -> "工作目录"
     "theme" -> "主题设置"
     "font" -> "字体大小"
+    "refresh_rate" -> "刷新率"
     "permissions" -> "应用权限"
     "system_permissions" -> "系统权限"
     "tools" -> "AI Agent 工具"
@@ -1030,9 +1053,12 @@ internal fun ThemeSettings(
     onThemeModeChange: (String) -> Unit,
     dynamicColorEnabled: Boolean,
     onDynamicColorChange: (Boolean) -> Unit,
+    refreshRateMode: String,
+    onRefreshRateModeChange: (String) -> Unit,
     fontScaleMode: String,
     customFontScale: Float,
     onOpenFontSettings: () -> Unit,
+    onOpenRefreshRateSettings: () -> Unit,
 ) {
     KimiCardBox {
         Text("主题模式", style = MaterialTheme.typography.titleMedium)
@@ -1056,6 +1082,33 @@ internal fun ThemeSettings(
         }
         KimiDivider()
         KimiMenuRow(Icons.Default.FormatSize, "字体大小", fontScaleName(fontScaleMode, customFontScale), onOpenFontSettings)
+        KimiDivider()
+        KimiMenuRow(Icons.Default.Speed, "刷新率", refreshRateName(refreshRateMode), onOpenRefreshRateSettings)
+    }
+}
+
+@Composable
+internal fun RefreshRateSettings(
+    refreshRateMode: String,
+    onRefreshRateModeChange: (String) -> Unit,
+) {
+    KimiCardBox {
+        Text("刷新率", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "跟随系统会交给设备自行在省电和流畅之间切换；固定刷新率会向系统请求指定帧率，实际是否生效取决于屏幕和系统策略。",
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        KimiDivider()
+        RefreshRateOptionRow("跟随系统智能刷新率", AppSettings.REFRESH_RATE_SYSTEM, refreshRateMode, onRefreshRateModeChange)
+        KimiDivider()
+        RefreshRateOptionRow("30 Hz", AppSettings.REFRESH_RATE_30, refreshRateMode, onRefreshRateModeChange)
+        KimiDivider()
+        RefreshRateOptionRow("60 Hz", AppSettings.REFRESH_RATE_60, refreshRateMode, onRefreshRateModeChange)
+        KimiDivider()
+        RefreshRateOptionRow("90 Hz", AppSettings.REFRESH_RATE_90, refreshRateMode, onRefreshRateModeChange)
+        KimiDivider()
+        RefreshRateOptionRow("120 Hz", AppSettings.REFRESH_RATE_120, refreshRateMode, onRefreshRateModeChange)
     }
 }
 
@@ -1083,12 +1136,37 @@ internal fun ThemeOptionRow(title: String, value: String, selected: String, onSe
 }
 
 @Composable
+internal fun RefreshRateOptionRow(title: String, value: String, selected: String, onSelect: (String) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable { onSelect(value) }
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Speed,
+            contentDescription = null,
+            modifier = Modifier.width(36.dp).size(24.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        if (value == selected) {
+            Icon(Icons.Default.Check, contentDescription = "已选择", tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
 internal fun FontSizeSettings(
     fontScaleMode: String,
     customFontScale: Float,
     onFontScaleModeChange: (String) -> Unit,
     onCustomFontScaleChange: (Float) -> Unit,
 ) {
+    val currentDensity = LocalDensity.current
+    val activeFontScale = currentDensity.fontScale
     val initialScale = remember(fontScaleMode, customFontScale) {
         when (fontScaleMode) {
             AppSettings.FONT_SCALE_SMALL -> 0.9f
@@ -1100,6 +1178,7 @@ internal fun FontSizeSettings(
     }
     var draftScale by remember(fontScaleMode, customFontScale) { mutableStateOf(initialScale) }
     val followSystem = fontScaleMode == AppSettings.FONT_SCALE_SYSTEM
+    val previewScale = if (followSystem) activeFontScale.coerceIn(AppSettings.MIN_FONT_SCALE, AppSettings.MAX_FONT_SCALE) else draftScale
     Column(
         Modifier
             .fillMaxSize()
@@ -1118,22 +1197,21 @@ internal fun FontSizeSettings(
                     shape = RoundedCornerShape(18.dp),
                     color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
                 ) {
-                    Text(
-                        "预览文字大小",
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
-                        style = MaterialTheme.typography.titleMedium.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize * draftScale),
-                    )
+                    CompositionLocalProvider(LocalDensity provides Density(currentDensity.density, previewScale)) {
+                        Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+                            Text("预览文字大小", style = MaterialTheme.typography.titleMedium)
+                            Text(fontScaleLabel(previewScale), color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
                 }
             }
-            Text(
-                "你可以拖动滑块来调整字体大小。",
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = MaterialTheme.typography.titleLarge.fontSize * draftScale),
-            )
-            Text(
-                "如果在使用过程中存在问题或建议，可在关于软件页面查看仓库链接并反馈。",
-                style = MaterialTheme.typography.titleMedium.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize * draftScale),
-                lineHeight = MaterialTheme.typography.titleMedium.lineHeight * draftScale,
-            )
+            CompositionLocalProvider(LocalDensity provides Density(currentDensity.density, previewScale)) {
+                Text("你可以拖动滑块来调整字体大小。", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "如果在使用过程中存在问题或建议，可在关于软件页面查看仓库链接并反馈。",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
         }
         KimiCardBox {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1157,19 +1235,19 @@ internal fun FontSizeSettings(
                     Slider(
                         value = draftScale,
                         onValueChange = {
-                            draftScale = (
-                                it / AppSettings.FONT_SCALE_STEP
-                            ).roundToInt() * AppSettings.FONT_SCALE_STEP
+                            draftScale = it.coerceIn(AppSettings.MIN_FONT_SCALE, AppSettings.MAX_FONT_SCALE)
                         },
                         onValueChangeFinished = {
+                            val finalScale = (
+                                draftScale / AppSettings.FONT_SCALE_STEP
+                            ).roundToInt() * AppSettings.FONT_SCALE_STEP
+                            val committedScale = finalScale.coerceIn(AppSettings.MIN_FONT_SCALE, AppSettings.MAX_FONT_SCALE)
+                            draftScale = committedScale
                             onFontScaleModeChange(AppSettings.FONT_SCALE_CUSTOM)
-                            onCustomFontScaleChange(draftScale)
+                            onCustomFontScaleChange(committedScale)
                         },
                         valueRange = AppSettings.MIN_FONT_SCALE..AppSettings.MAX_FONT_SCALE,
-                        steps = (
-                            (AppSettings.MAX_FONT_SCALE - AppSettings.MIN_FONT_SCALE) /
-                                AppSettings.FONT_SCALE_STEP
-                            ).roundToInt() - 1,
+                        steps = 0,
                         enabled = !followSystem,
                     )
                 }
@@ -1194,6 +1272,14 @@ internal fun themeName(mode: String): String = when (mode) {
     AppSettings.THEME_LIGHT -> "浅色"
     AppSettings.THEME_DARK -> "深色"
     else -> "跟随系统"
+}
+
+internal fun refreshRateName(mode: String): String = when (mode) {
+    AppSettings.REFRESH_RATE_30 -> "30 Hz"
+    AppSettings.REFRESH_RATE_60 -> "60 Hz"
+    AppSettings.REFRESH_RATE_90 -> "90 Hz"
+    AppSettings.REFRESH_RATE_120 -> "120 Hz"
+    else -> "智能刷新率"
 }
 
 internal fun fontScaleName(mode: String, customFontScale: Float): String = when (mode) {
@@ -1525,6 +1611,13 @@ internal fun SystemPermissionSettings(
             }
         }
         Text(rootStatus, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        KimiDivider()
+        SettingsExternalLinkRow(
+            icon = Icons.Default.Link,
+            title = "Shizuku GitHub",
+            subtitle = "RikkaApps/Shizuku",
+            url = "https://github.com/RikkaApps/Shizuku",
+        )
     }
     Text(
         "Root 和 Shell 开关都关闭时，AI 不会看到任何系统命令工具。所有 Shell/Root 命令都会先显示完整命令并请求确认；Root 命令风险更高。普通 ADB 不会永久赋予应用 shell 身份，本应用通过 Shizuku 获取该能力。",
@@ -2296,6 +2389,7 @@ internal fun McpSettings(settings: AppSettings, mcpClientManager: McpClientManag
     var editing by remember { mutableStateOf<McpServerConfig?>(null) }
     var deleteTarget by remember { mutableStateOf<McpServerConfig?>(null) }
     var status by remember { mutableStateOf("") }
+    var expandedToolServerIds by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
 
     editing?.let { server ->
         McpServerDialog(
@@ -2386,15 +2480,62 @@ internal fun McpSettings(settings: AppSettings, mcpClientManager: McpClientManag
                 }
             }
             if (server.tools.isNotEmpty()) {
+                val toolsExpanded = server.id in expandedToolServerIds
                 KimiDivider()
-                server.tools.take(8).forEach { tool ->
-                    Text("• ${tool.name} - ${tool.description.ifBlank { "无描述" }}", style = MaterialTheme.typography.bodySmall, color = KimiMuted)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable {
+                            expandedToolServerIds = if (toolsExpanded) {
+                                expandedToolServerIds - server.id
+                            } else {
+                                expandedToolServerIds + server.id
+                            }
+                        }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Default.Extension, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("已拉取 ${server.tools.size} 个工具", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            if (toolsExpanded) "点击收起工具名称和简介" else "点击展开查看工具名称和简介",
+                            color = KimiMuted,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Icon(
+                        if (toolsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = KimiMuted,
+                    )
                 }
-                if (server.tools.size > 8) {
-                    Text("还有 ${server.tools.size - 8} 个 tools", color = KimiMuted, style = MaterialTheme.typography.labelSmall)
+                AnimatedVisibility(visible = toolsExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        server.tools.forEachIndexed { index, tool ->
+                            McpToolSummaryRow(tool)
+                            if (index != server.tools.lastIndex) KimiDivider()
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun McpToolSummaryRow(tool: McpToolDefinition) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(tool.name, style = MaterialTheme.typography.titleSmall)
+        Text(
+            tool.description.ifBlank { "无描述" },
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -2641,6 +2782,9 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
     AgentToolInfo("global_delete_file_or_folder", "全局删除文件/目录", "删除工作区外共享存储内容，执行前需要用户确认。"),
     AgentToolInfo("global_rename_move", "全局移动/重命名", "移动工作区外共享存储内容，执行前需要用户确认。"),
     AgentToolInfo("download_file", "下载文件", "使用应用原生 HTTP/HTTPS 客户端下载到工作区或共享存储，支持请求头和 SHA-256 校验。"),
+    AgentToolInfo("manage_scheduled_tasks", "定时任务", "列出或管理一次性、每日、每周和每月后台 AI 任务。"),
+    AgentToolInfo("search_conversation_history", "搜索会话记录", "跨普通会话按关键词和时间段搜索历史记录，不读取思维链或工具日志。"),
+    AgentToolInfo("read_conversation_history", "读取会话记录", "读取指定历史会话的用户消息和 AI 最终回复，用于总结与趋势分析。"),
     AgentToolInfo("search_files", "工作区搜索", "按文件名或路径片段搜索工作区。"),
     AgentToolInfo("global_search_files", "全局文件搜索", "搜索 Android 共享存储中的文件路径。"),
     AgentToolInfo("get_file_info", "文件信息", "读取文件大小、修改时间等元数据。"),
@@ -2691,6 +2835,12 @@ internal fun TermuxSetupGuide() {
                 style = MaterialTheme.typography.bodySmall,
             )
             TermuxGuideStep("1", "安装并打开 Termux，建议使用 F-Droid 或 GitHub 版本。")
+            SettingsExternalLinkRow(
+                icon = Icons.Default.Terminal,
+                title = "Termux GitHub",
+                subtitle = "termux/termux-app",
+                url = "https://github.com/termux/termux-app",
+            )
             TermuxGuideStep("2", "复制下面的配置命令到 Termux 执行，开启外部应用调用权限。")
             CommandCopyCard(
                 command = setupCommand,
@@ -2706,6 +2856,32 @@ internal fun TermuxSetupGuide() {
                 onCopy = { clipboard.setText(AnnotatedString(testCommand)) },
             )
         }
+    }
+}
+
+@Composable
+internal fun SettingsExternalLinkRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    url: String,
+) {
+    val uriHandler = LocalUriHandler.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable { uriHandler.openUri(url) }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(subtitle, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = KimiMuted)
     }
 }
 

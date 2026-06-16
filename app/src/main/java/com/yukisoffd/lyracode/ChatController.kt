@@ -72,11 +72,7 @@ class ChatController(
         reloadConversations()
         val first = conversations.firstOrNull()
         if (!settings.immersiveRoleplayEnabled) {
-            when {
-                first == null -> newConversation()
-                conversationHasUserMessage(first.id) -> newConversation()
-                else -> selectConversation(first.id)
-            }
+            showTransientNewConversation()
         } else if (first == null) {
             newConversation()
         } else {
@@ -148,6 +144,14 @@ class ChatController(
     }
 
     fun newConversation() {
+        if (!isRoleplayMode()) {
+            showTransientNewConversation()
+            return
+        }
+        createPersistedConversation()
+    }
+
+    private fun createPersistedConversation(): Long {
         val profile = currentProfile()
         val roleplayId = currentRoleplayId()
         val id = conversationStore.createConversation(
@@ -160,18 +164,21 @@ class ChatController(
         todoByConversation[id] = mutableListOf()
         reloadConversations()
         selectConversation(id)
+        return id
+    }
+
+    private fun showTransientNewConversation() {
+        activeConversationId.value = 0L
+        _messages.value = emptyList()
+        todoItems.clear()
+        pendingUploads.clear()
+        uploadingStatus.value = ""
+        status.value = ""
     }
 
     fun requestNewConversation(): Boolean {
-        if (!isRoleplayMode() && isCurrentConversationBlank()) {
+        if (!isRoleplayMode() && (activeConversationId.value <= 0L || isCurrentConversationBlank())) {
             return false
-        }
-        if (!isRoleplayMode()) {
-            val existingBlank = conversations.firstOrNull { !conversationHasUserMessage(it.id) }
-            if (existingBlank != null) {
-                selectConversation(existingBlank.id)
-                return true
-            }
         }
         newConversation()
         return true
@@ -195,7 +202,11 @@ class ChatController(
         conversationStore.deleteConversation(id)
         reloadConversations()
         val next = conversations.firstOrNull()?.id
-        if (next == null) newConversation() else selectConversation(next)
+        if (next == null) {
+            if (isRoleplayMode()) newConversation() else showTransientNewConversation()
+        } else {
+            selectConversation(next)
+        }
     }
 
     fun renameConversation(id: Long, title: String) {
@@ -218,7 +229,11 @@ class ChatController(
         reloadConversations()
         if (activeConversationId.value in ids) {
             val next = conversations.firstOrNull()?.id
-            if (next == null) newConversation() else selectConversation(next)
+            if (next == null) {
+                if (isRoleplayMode()) newConversation() else showTransientNewConversation()
+            } else {
+                selectConversation(next)
+            }
         }
     }
 
@@ -230,7 +245,7 @@ class ChatController(
     fun send(text: String) {
         val uploads = pendingUploads.toList()
         if (text.isBlank() && uploads.isEmpty()) return
-        val conversationId = activeConversationId.value.takeIf { it > 0 } ?: return
+        val conversationId = activeConversationId.value.takeIf { it > 0 } ?: createPersistedConversation()
         if (jobs[conversationId]?.isActive == true) return
         val profile = currentProfile()
         val model = activeModel.value.ifBlank { profile.selectedModel }
@@ -326,7 +341,6 @@ class ChatController(
     }
 
     fun attachUploadedFile(uri: Uri) {
-        val conversationId = activeConversationId.value.takeIf { it > 0 } ?: return
         scope.launch {
             uploadingStatus.value = "读取上传文件"
             val result = withContext(Dispatchers.IO) { uploadedFileManager.readText(uri) }
@@ -341,7 +355,6 @@ class ChatController(
     }
 
     fun attachCapturedImage(bitmap: Bitmap) {
-        val conversationId = activeConversationId.value.takeIf { it > 0 } ?: return
         scope.launch {
             uploadingStatus.value = "处理拍照图片"
             val result = withContext(Dispatchers.IO) { uploadedFileManager.saveCapturedImage(bitmap) }
@@ -459,7 +472,7 @@ class ChatController(
     fun activeConversation(): Conversation? = conversationStore.conversation(activeConversationId.value)
 
     private fun isCurrentConversationBlank(): Boolean {
-        val id = activeConversationId.value.takeIf { it > 0 } ?: return false
+        val id = activeConversationId.value.takeIf { it > 0 } ?: return true
         return !conversationHasUserMessage(id)
     }
 
@@ -494,7 +507,13 @@ class ChatController(
     fun switchConversationScope() {
         reloadConversations()
         val first = conversations.firstOrNull()
-        if (first == null) newConversation() else selectConversation(first.id)
+        if (!isRoleplayMode()) {
+            showTransientNewConversation()
+        } else if (first == null) {
+            newConversation()
+        } else {
+            selectConversation(first.id)
+        }
     }
 
     fun clearCurrentRoleplayData() {

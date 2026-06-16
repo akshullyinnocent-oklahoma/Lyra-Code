@@ -24,6 +24,11 @@ import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.InstalledAppCollector
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
+import com.yukisoffd.lyracode.tasks.DownloadTaskManager
+import com.yukisoffd.lyracode.tasks.DownloadTaskRequest
+import com.yukisoffd.lyracode.tasks.ScheduledTask
+import com.yukisoffd.lyracode.tasks.ScheduledTaskManager
+import com.yukisoffd.lyracode.tasks.ScheduledTaskType
 import com.yukisoffd.lyracode.termux.TermuxExecutor
 import com.yukisoffd.lyracode.webdav.WebDavClient
 import com.yukisoffd.lyracode.workspace.GlobalFileManager
@@ -44,9 +49,13 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URI
-import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -148,6 +157,8 @@ class OpenAiAgent(
     private val systemCommandExecutor: SystemCommandExecutor,
     private val webDavClient: WebDavClient,
     private val backupManager: BackupManager,
+    private val downloadTaskManager: DownloadTaskManager,
+    private val scheduledTaskManager: ScheduledTaskManager,
     private val responseCache: AiResponseCache? = null,
 ) {
     var approvalHandler: suspend (ToolApprovalRequest) -> ToolApprovalDecision = { ToolApprovalDecision.Approved }
@@ -165,6 +176,7 @@ class OpenAiAgent(
         userInput: String,
         profile: ApiProfile,
         model: String,
+        propagateErrors: Boolean = false,
         onUpdate: suspend (ChatUpdate) -> Unit,
     ) = withContext(Dispatchers.IO) {
         conversationStore.setConversationMeta(
@@ -176,7 +188,7 @@ class OpenAiAgent(
         )
         conversationStore.addMessage(conversationId, "user", userInput, profileId = profile.id, model = model)
         onUpdate(ChatUpdate("", "", "已发送"))
-        runLoop(conversationId, profile, model, onUpdate)
+        runLoop(conversationId, profile, model, onUpdate, propagateErrors)
     }
 
     suspend fun continueConversation(
@@ -302,6 +314,7 @@ class OpenAiAgent(
         profile: ApiProfile,
         model: String,
         onUpdate: suspend (ChatUpdate) -> Unit,
+        propagateErrors: Boolean = false,
     ) {
         try {
             while (true) {
@@ -343,6 +356,7 @@ class OpenAiAgent(
             conversationStore.setConversationMeta(conversationId, status = ConversationStore.STATUS_INTERRUPTED, profileId = profile.id, model = model)
             conversationStore.addMessage(conversationId, "assistant", "请求中断: ${error.message}", profileId = profile.id, model = model)
             onUpdate(ChatUpdate("", "", "请求中断: ${error.message}"))
+            if (propagateErrors) throw error
         }
     }
 
@@ -1172,6 +1186,9 @@ class OpenAiAgent(
                 "global_delete_file_or_folder" -> ToolExecution(globalFileManager.delete(args.getString("path")).getOrThrow())
                 "global_rename_move" -> ToolExecution(globalFileManager.renameMove(args.getString("from"), args.getString("to")).getOrThrow())
                 "download_file" -> downloadFile(args)
+                "manage_scheduled_tasks" -> ToolExecution(manageScheduledTasks(args))
+                "search_conversation_history" -> ToolExecution(searchConversationHistory(args))
+                "read_conversation_history" -> ToolExecution(readConversationHistory(args))
                 "search_files" -> {
                     val query = args.getString("query")
                     val path = args.optString("path")
@@ -1926,7 +1943,7 @@ class OpenAiAgent(
         }
     }
 
-    private fun downloadFile(args: JSONObject): ToolExecution {
+    private suspend fun downloadFile(args: JSONObject): ToolExecution {
         val url = args.getString("url").trim()
         require(url.startsWith("http://", true) || url.startsWith("https://", true)) {
             "下载 URL 必须是 http:// 或 https://"
@@ -1942,63 +1959,41 @@ class OpenAiAgent(
             "sha256 必须是 64 位十六进制字符串"
         }
         val timeoutSeconds = args.optInt("timeout_seconds", 300).coerceIn(10, 1800)
-        val requestBuilder = Request.Builder().url(url).get()
-        args.optJSONArray("headers")?.let { headers ->
-            for (index in 0 until headers.length()) {
-                val line = headers.optString(index).trim()
+        val requestHeaders = mutableListOf<Pair<String, String>>()
+        args.optJSONArray("headers")?.let { headerArray ->
+            for (index in 0 until headerArray.length()) {
+                val line = headerArray.optString(index).trim()
                 if (line.isBlank()) continue
                 val separator = line.indexOf(':')
                 require(separator > 0) { "headers 每项必须使用 Name: Value 格式" }
                 val name = line.substring(0, separator).trim()
                 val value = line.substring(separator + 1).trim()
                 require(name.isNotBlank() && value.isNotBlank()) { "请求头名称和值不能为空" }
-                requestBuilder.header(name, value)
+                requestHeaders += name to value
             }
         }
-
-        val tempFile = File.createTempFile("agent_download_", ".part", context.cacheDir)
-        try {
-            val downloadClient = client.newBuilder()
-                .readTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
-                .callTimeout(timeoutSeconds.toLong(), TimeUnit.SECONDS)
-                .build()
-            return downloadClient.newCall(requestBuilder.build()).execute().use { response ->
-                val body = response.body ?: error("下载响应为空")
-                if (!response.isSuccessful) {
-                    error("下载失败 HTTP ${response.code}: ${body.string().take(500)}")
-                }
-                val digest = MessageDigest.getInstance("SHA-256")
-                DigestInputStream(body.byteStream(), digest).use { input ->
-                    tempFile.outputStream().buffered().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
-                if (expectedSha256.isNotBlank() && actualSha256 != expectedSha256) {
-                    error("SHA-256 校验失败: expected=$expectedSha256 actual=$actualSha256")
-                }
-                val written = tempFile.inputStream().buffered().use { input ->
-                    when (destination) {
-                        "workspace" -> nativeFileManager.writeStream(path, input).getOrThrow()
-                        else -> globalFileManager.writeStream(path, input).getOrThrow()
-                    }
-                }
-                ToolExecution(
-                    JSONObject()
-                        .put("status", "downloaded")
-                        .put("url", url)
-                        .put("final_url", response.request.url.toString())
-                        .put("destination", destination)
-                        .put("path", path)
-                        .put("bytes", written)
-                        .put("content_type", body.contentType()?.toString().orEmpty())
-                        .put("sha256", actualSha256)
-                        .toString(),
-                )
-            }
-        } finally {
-            tempFile.delete()
-        }
+        val result = downloadTaskManager.download(
+            DownloadTaskRequest(
+                url = url,
+                destination = destination,
+                path = path,
+                headers = requestHeaders,
+                expectedSha256 = expectedSha256,
+                timeoutSeconds = timeoutSeconds,
+            ),
+        ).await()
+        return ToolExecution(
+            JSONObject()
+                .put("status", "downloaded")
+                .put("url", url)
+                .put("final_url", result.finalUrl)
+                .put("destination", result.destination)
+                .put("path", result.path)
+                .put("bytes", result.bytes)
+                .put("content_type", result.contentType)
+                .put("sha256", result.sha256)
+                .toString(),
+        )
     }
 
     private fun mcpServersJson(): JSONArray = JSONArray().also { array ->
@@ -2136,6 +2131,198 @@ class OpenAiAgent(
             .sorted()
     }
 
+    private fun manageScheduledTasks(args: JSONObject): String {
+        val action = args.optString("action").trim().lowercase(Locale.US)
+        if (action == "list") {
+            return JSONObject()
+                .put("schema", "lyra_scheduled_tasks_v1")
+                .put("tasks", scheduledTaskManager.describe())
+                .toString()
+        }
+        val taskId = args.optString("task_id")
+        if (action == "delete") {
+            require(taskId.isNotBlank()) { "task_id 不能为空" }
+            scheduledTaskManager.delete(taskId)
+            return JSONObject().put("ok", true).put("action", action).put("task_id", taskId).toString()
+        }
+        if (action == "enable" || action == "disable") {
+            require(taskId.isNotBlank()) { "task_id 不能为空" }
+            val task = scheduledTaskManager.setEnabled(taskId, action == "enable")
+                ?: error("定时任务不存在: $taskId")
+            return scheduledTaskResult(action, task)
+        }
+        require(action == "create" || action == "update") { "action 必须是 list/create/update/enable/disable/delete" }
+        val existing = taskId.takeIf { it.isNotBlank() }?.let(scheduledTaskManager::task)
+        if (action == "update") require(existing != null) { "定时任务不存在: $taskId" }
+        val profile = settings.profiles().firstOrNull { it.id == args.optString("profile_id") }
+            ?: existing?.profileId?.let { id -> settings.profiles().firstOrNull { it.id == id } }
+            ?: settings.selectedProfile()
+        val type = args.optString("schedule_type", existing?.type?.name.orEmpty())
+            .uppercase(Locale.US)
+            .let { runCatching { ScheduledTaskType.valueOf(it) }.getOrDefault(existing?.type ?: ScheduledTaskType.ONCE) }
+        val runAt = args.optString("run_at").takeIf { it.isNotBlank() }?.let(::parseAgentTime)
+            ?: existing?.runAtMillis
+            ?: 0L
+        if (type == ScheduledTaskType.ONCE) require(runAt > System.currentTimeMillis()) {
+            "一次性任务的 run_at 必须是未来时间，可用 yyyy-MM-dd HH:mm 或 ISO-8601"
+        }
+        val task = ScheduledTask(
+            id = existing?.id ?: java.util.UUID.randomUUID().toString(),
+            title = args.optString("title").ifBlank { existing?.title ?: "定时任务" },
+            prompt = args.optString("prompt").ifBlank { existing?.prompt.orEmpty() },
+            type = type,
+            hour = if (args.has("hour")) args.optInt("hour") else existing?.hour ?: 9,
+            minute = if (args.has("minute")) args.optInt("minute") else existing?.minute ?: 0,
+            runAtMillis = runAt,
+            dayOfWeek = if (args.has("day_of_week")) args.optInt("day_of_week") else existing?.dayOfWeek ?: 1,
+            dayOfMonth = if (args.has("day_of_month")) args.optInt("day_of_month") else existing?.dayOfMonth ?: 1,
+            profileId = profile.id,
+            model = args.optString("model").ifBlank { existing?.model ?: profile.selectedModel },
+            enabled = if (args.has("enabled")) args.optBoolean("enabled") else existing?.enabled ?: true,
+            createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+            lastRunAt = existing?.lastRunAt ?: 0L,
+            finishedAt = existing?.finishedAt ?: 0L,
+            status = existing?.status ?: com.yukisoffd.lyracode.tasks.ScheduledTaskStatus.IDLE,
+            result = existing?.result.orEmpty(),
+            error = existing?.error.orEmpty(),
+        )
+        require(task.prompt.isNotBlank()) { "prompt 不能为空" }
+        return scheduledTaskResult(action, scheduledTaskManager.save(task))
+    }
+
+    private fun scheduledTaskResult(action: String, task: ScheduledTask): String = JSONObject()
+        .put("ok", true)
+        .put("action", action)
+        .put("task_id", task.id)
+        .put("title", task.title)
+        .put("schedule_type", task.type.name.lowercase(Locale.US))
+        .put("enabled", task.enabled)
+        .put("next_run_at", task.nextRunAt)
+        .put("profile_id", task.profileId)
+        .put("model", task.model)
+        .toString()
+
+    private fun searchConversationHistory(args: JSONObject): String {
+        val query = args.optString("query").trim()
+        val start = args.optString("start_time").takeIf { it.isNotBlank() }?.let(::parseAgentTime) ?: Long.MIN_VALUE
+        val end = args.optString("end_time").takeIf { it.isNotBlank() }?.let(::parseAgentTime) ?: Long.MAX_VALUE
+        val limit = args.optInt("limit", 20).coerceIn(1, 100)
+        val results = conversationStore.conversations(ConversationStore.MODE_NORMAL)
+            .asSequence()
+            .filter { it.updatedAt in start..end }
+            .map { conversation ->
+                val visible = conversationStore.messages(conversation.id)
+                    .filter { it.role == "user" || it.role == "assistant" }
+                    .filter { it.content.isNotBlank() }
+                conversation to visible
+            }
+            .filter { (conversation, messages) ->
+                query.isBlank() ||
+                    conversation.title.contains(query, ignoreCase = true) ||
+                    messages.any { it.content.contains(query, ignoreCase = true) }
+            }
+            .take(limit)
+            .toList()
+        return JSONObject()
+            .put("schema", "lyra_conversation_search_v1")
+            .put("thinking_included", false)
+            .put("tool_messages_included", false)
+            .put(
+                "conversations",
+                JSONArray().also { array ->
+                    results.forEach { (conversation, messages) ->
+                        array.put(
+                            JSONObject()
+                                .put("id", conversation.id.toString())
+                                .put("title", conversation.title)
+                                .put("created_at", conversation.createdAt)
+                                .put("updated_at", conversation.updatedAt)
+                                .put("message_count", messages.size)
+                                .put(
+                                    "preview",
+                                    messages.asReversed().firstOrNull()?.content.orEmpty()
+                                        .replace(Regex("\\s+"), " ")
+                                        .take(240),
+                                ),
+                        )
+                    }
+                },
+            )
+            .toString()
+    }
+
+    private fun readConversationHistory(args: JSONObject): String {
+        val ids = buildList {
+            args.optJSONArray("conversation_ids")?.let { array ->
+                for (index in 0 until array.length()) {
+                    array.optString(index).toLongOrNull()?.let(::add)
+                }
+            }
+            args.optString("conversation_id").toLongOrNull()?.let(::add)
+        }.distinct().take(20)
+        require(ids.isNotEmpty()) { "conversation_id 或 conversation_ids 不能为空" }
+        val maxMessages = args.optInt("max_messages", 100).coerceIn(1, 500)
+        val conversations = JSONArray()
+        ids.forEach { id ->
+            val conversation = conversationStore.conversation(id)
+            if (conversation == null || conversation.mode != ConversationStore.MODE_NORMAL) return@forEach
+            val visible = conversationStore.messages(id)
+                .filter { it.role == "user" || it.role == "assistant" }
+                .filter { it.content.isNotBlank() }
+                .takeLast(maxMessages)
+            conversations.put(
+                JSONObject()
+                    .put("id", id.toString())
+                    .put("title", conversation.title)
+                    .put("created_at", conversation.createdAt)
+                    .put("updated_at", conversation.updatedAt)
+                    .put(
+                        "messages",
+                        JSONArray().also { array ->
+                            visible.forEach { message ->
+                                array.put(
+                                    JSONObject()
+                                        .put("role", message.role)
+                                        .put("content", message.content)
+                                        .put("created_at", message.createdAt),
+                                )
+                            }
+                        },
+                    ),
+            )
+        }
+        return JSONObject()
+            .put("schema", "lyra_conversation_history_v1")
+            .put("thinking_included", false)
+            .put("tool_messages_included", false)
+            .put("conversations", conversations)
+            .toString()
+    }
+
+    private fun parseAgentTime(value: String): Long {
+        value.toLongOrNull()?.let { return it }
+        val zone = ZoneId.systemDefault()
+        val dateTimeFormats = listOf(
+            DateTimeFormatter.ISO_LOCAL_DATE_TIME,
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
+            DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm"),
+        )
+        dateTimeFormats.forEach { formatter ->
+            try {
+                return LocalDateTime.parse(value.trim(), formatter).atZone(zone).toInstant().toEpochMilli()
+            } catch (_: DateTimeParseException) {
+            }
+        }
+        return try {
+            LocalDate.parse(value.trim(), DateTimeFormatter.ISO_LOCAL_DATE)
+                .atStartOfDay(zone)
+                .toInstant()
+                .toEpochMilli()
+        } catch (_: DateTimeParseException) {
+            error("无法解析时间: $value")
+        }
+    }
+
     private fun allMcpToolMetaForConfig(): Map<String, Triple<Boolean, String, String>> {
         return buildMap {
             settings.mcpServers().forEach { server ->
@@ -2234,6 +2421,17 @@ class OpenAiAgent(
                         }
                     },
                 )
+            }
+            "manage_scheduled_tasks" -> if (args.optString("action").lowercase(Locale.US) in setOf("create", "update", "delete", "enable", "disable")) {
+                ToolApprovalRequest(
+                    conversationId,
+                    call.name,
+                    call.rawArguments,
+                    "修改后台定时任务：${args.optString("title").ifBlank { args.optString("task_id") }}",
+                    "会创建、修改、启用、禁用或删除系统后台调度任务。",
+                )
+            } else {
+                null
             }
             "run_command" -> if (requiresCommandApproval(args.optString("command"))) {
                 ToolApprovalRequest(
@@ -2736,6 +2934,43 @@ class OpenAiAgent(
                 ),
             ),
         )
+        .put(
+            functionWithOptional(
+                "manage_scheduled_tasks",
+                "管理 Lyra Code 后台定时任务。action=list 可查看任务；create/update/delete/enable/disable 会先请求用户确认。schedule_type 支持 once、daily、weekly、monthly。once 使用 run_at；daily 使用 hour/minute；weekly 额外使用 day_of_week（1=周一，7=周日）；monthly 额外使用 day_of_month。每个任务可指定独立 profile_id 和 model，不会出现在普通历史会话中。",
+                required = listOf("action" to "string"),
+                optional = listOf(
+                    "task_id" to "string",
+                    "title" to "string",
+                    "prompt" to "string",
+                    "schedule_type" to "string",
+                    "run_at" to "string",
+                    "hour" to "integer",
+                    "minute" to "integer",
+                    "day_of_week" to "integer",
+                    "day_of_month" to "integer",
+                    "profile_id" to "string",
+                    "model" to "string",
+                    "enabled" to "boolean",
+                ),
+            ),
+        )
+        .put(
+            functionWithOptional(
+                "search_conversation_history",
+                "跨普通会话搜索历史记录，可按关键词和时间段筛选。返回会话 id、标题、时间、消息数和简短预览；不会返回思维链或工具调用内容。start_time/end_time 可用时间戳、yyyy-MM-dd、yyyy-MM-dd HH:mm 或 ISO-8601。",
+                required = emptyList(),
+                optional = listOf("query" to "string", "start_time" to "string", "end_time" to "string", "limit" to "integer"),
+            ),
+        )
+        .put(
+            functionWithOptional(
+                "read_conversation_history",
+                "读取一个或多个普通历史会话的用户消息和 AI 最终可见回复。不会传入思维链、工具调用请求或工具返回，适合总结近期工作、生成周报。先用 search_conversation_history 获取 id。",
+                required = emptyList(),
+                optional = listOf("conversation_id" to "string", "conversation_ids" to "array:string", "max_messages" to "integer"),
+            ),
+        )
         .put(function("search_files", "在工作目录内按文件名、扩展名或路径片段搜索文件。查找文件路径时必须优先使用此工具；query 填文件名或关键词，path 填 . 或相对子目录。", "query" to "string", "path" to "string"))
         .put(function("global_search_files", "在 Android 共享存储 /storage/emulated/0 下按文件名或路径片段全局搜索文件。仅当 search_files 返回 SEARCH_EMPTY 且用户需要查找工作区外文件时调用一次；不要用它替代工作区内搜索。返回绝对路径。", "query" to "string"))
         .put(function("get_file_info", "获取文件元数据", "path" to "string"))
@@ -3206,6 +3441,9 @@ class OpenAiAgent(
             "global_delete_file_or_folder",
             "global_rename_move",
             "download_file",
+            "manage_scheduled_tasks",
+            "search_conversation_history",
+            "read_conversation_history",
             "search_files",
             "global_search_files",
             "get_file_info",

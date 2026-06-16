@@ -152,6 +152,22 @@ class AppSettings(context: Context) {
         get() = plainPrefs.getBoolean(KEY_DYNAMIC_COLOR_ENABLED, false)
         set(value) = plainPrefs.edit().putBoolean(KEY_DYNAMIC_COLOR_ENABLED, value).apply()
 
+    var refreshRateMode: String
+        get() = plainPrefs.getString(KEY_REFRESH_RATE_MODE, REFRESH_RATE_SYSTEM)
+            .orEmpty()
+            .ifBlank { REFRESH_RATE_SYSTEM }
+        set(value) = plainPrefs.edit().putString(KEY_REFRESH_RATE_MODE, value).apply()
+
+    var taskCompletionNotificationsEnabled: Boolean
+        get() = plainPrefs.getBoolean(KEY_DOWNLOAD_COMPLETION_NOTIFICATIONS, true)
+        set(value) = plainPrefs.edit().putBoolean(KEY_DOWNLOAD_COMPLETION_NOTIFICATIONS, value).apply()
+
+    var downloadCompletionNotificationsEnabled: Boolean
+        get() = taskCompletionNotificationsEnabled
+        set(value) {
+            taskCompletionNotificationsEnabled = value
+        }
+
     var fontScaleMode: String
         get() = plainPrefs.getString(KEY_FONT_SCALE_MODE, FONT_SCALE_SYSTEM)
             .orEmpty()
@@ -1002,6 +1018,7 @@ class AppSettings(context: Context) {
             .put("schema", "lyra_settings_backup_v1")
             .put("themeMode", themeMode)
             .put("dynamicColorEnabled", dynamicColorEnabled)
+            .put("refreshRateMode", refreshRateMode)
             .put("fontScaleMode", fontScaleMode)
             .put("customFontScale", customFontScale.toDouble())
             .put("requestRootAccess", requestRootAccess)
@@ -1084,6 +1101,7 @@ class AppSettings(context: Context) {
         val messages = mutableListOf<String>()
         root.optString("themeMode").takeIf { it.isNotBlank() }?.let { themeMode = it }
         if (root.has("dynamicColorEnabled")) dynamicColorEnabled = root.optBoolean("dynamicColorEnabled")
+        root.optString("refreshRateMode").takeIf { it.isNotBlank() }?.let { refreshRateMode = it }
         root.optString("fontScaleMode").takeIf { it.isNotBlank() }?.let { fontScaleMode = it }
         if (root.has("customFontScale")) customFontScale = root.optDouble("customFontScale", 1.0).toFloat()
         if (root.has("requestRootAccess")) requestRootAccess = root.optBoolean("requestRootAccess")
@@ -1413,6 +1431,8 @@ class AppSettings(context: Context) {
         private const val KEY_DARK_MODE = "dark_mode"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
+        private const val KEY_REFRESH_RATE_MODE = "refresh_rate_mode"
+        private const val KEY_DOWNLOAD_COMPLETION_NOTIFICATIONS = "download_completion_notifications"
         private const val KEY_FONT_SCALE_MODE = "font_scale_mode"
         private const val KEY_CUSTOM_FONT_SCALE = "custom_font_scale"
         private const val KEY_REQUEST_ROOT_ACCESS = "request_root_access"
@@ -1452,6 +1472,11 @@ class AppSettings(context: Context) {
         const val THEME_SYSTEM = "system"
         const val THEME_LIGHT = "light"
         const val THEME_DARK = "dark"
+        const val REFRESH_RATE_SYSTEM = "system"
+        const val REFRESH_RATE_30 = "30"
+        const val REFRESH_RATE_60 = "60"
+        const val REFRESH_RATE_90 = "90"
+        const val REFRESH_RATE_120 = "120"
         const val FONT_SCALE_SYSTEM = "system"
         const val FONT_SCALE_SMALL = "small"
         const val FONT_SCALE_NORMAL = "normal"
