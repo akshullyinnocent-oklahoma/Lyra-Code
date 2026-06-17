@@ -178,6 +178,7 @@ import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
+import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.tasks.DownloadTaskManager
@@ -225,6 +226,7 @@ internal fun LyraCodeApp(
     systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
     backupManager: BackupManager,
+    miniServerManager: MiniServerManager,
     downloadTaskManager: DownloadTaskManager,
     scheduledTaskManager: ScheduledTaskManager,
     controller: ChatController,
@@ -474,9 +476,10 @@ internal fun LyraCodeApp(
                             mcpClientManager = mcpClientManager,
                             sshExecutor = sshExecutor,
                             systemCommandExecutor = systemCommandExecutor,
-                            webDavClient = webDavClient,
-                            backupManager = backupManager,
-                            workspaceDisplayName = workspaceName,
+                        webDavClient = webDavClient,
+                        backupManager = backupManager,
+                        miniServerManager = miniServerManager,
+                        workspaceDisplayName = workspaceName,
                             skills = skills,
                             skillStatus = skillStatus,
                             backupStatus = backupStatus,

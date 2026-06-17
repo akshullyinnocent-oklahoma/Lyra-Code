@@ -113,6 +113,24 @@ data class SshServerConfig(
         get() = "${host.trim()}:${port.coerceIn(1, 65535)}"
 }
 
+data class MiniServerConfig(
+    val protocol: String,
+    val host: String,
+    val port: Int,
+    val password: String,
+    val customDomains: List<String>,
+    val forceHttps: Boolean,
+    val tlsKeyStoreBase64: String,
+    val tlsKeyStorePassword: String,
+    val tlsCertificateChain: String,
+    val tlsPrivateKey: String,
+    val spaFallback: Boolean,
+    val directoryListing: Boolean,
+    val mdnsEnabled: Boolean,
+    val mdnsName: String,
+    val enabled: Boolean,
+)
+
 class AppSettings(context: Context) {
     private val appContext = context.applicationContext
     private val plainPrefs = appContext.getSharedPreferences("lyra_settings", Context.MODE_PRIVATE)
@@ -263,6 +281,18 @@ class AppSettings(context: Context) {
             KEY_REASONING_DEPTH,
             value.takeIf { it in reasoningDepthValues } ?: REASONING_AUTO,
         ).apply()
+
+    var webSearchBlacklistText: String
+        get() = plainPrefs.getString(KEY_WEB_SEARCH_BLACKLIST, "").orEmpty()
+        set(value) = plainPrefs.edit()
+            .putString(KEY_WEB_SEARCH_BLACKLIST, normalizeWebSearchBlacklistText(value))
+            .apply()
+
+    fun webSearchBlockedHosts(): Set<String> =
+        webSearchBlacklistText
+            .lineSequence()
+            .mapNotNull(::normalizeWebSearchBlockedHost)
+            .toSet()
 
     fun systemPromptPresets(): List<SystemPromptPreset> {
         val custom = customSystemPrompts()
@@ -1009,6 +1039,18 @@ class AppSettings(context: Context) {
             .firstOrNull { it.id == clean || it.name == clean || it.url == clean || it.stableId == clean }
     }
 
+    fun miniServerConfig(): MiniServerConfig {
+        val raw = securePrefs.getString(KEY_MINI_SERVER_CONFIG, null).orEmpty()
+        if (raw.isBlank()) return defaultMiniServerConfig()
+        return runCatching { parseMiniServerConfig(JSONObject(raw)) }.getOrDefault(defaultMiniServerConfig())
+    }
+
+    fun saveMiniServerConfig(config: MiniServerConfig) {
+        securePrefs.edit()
+            .putString(KEY_MINI_SERVER_CONFIG, miniServerConfigJson(config, includeSecrets = true).toString())
+            .apply()
+    }
+
     fun skillsRootDir(): File = skillsRoot()
 
     fun roleplayRootDir(): File = roleplayRoot()
@@ -1038,6 +1080,7 @@ class AppSettings(context: Context) {
             .put("customSystemPrompts", JSONObject(plainPrefs.getString(KEY_CUSTOM_SYSTEM_PROMPTS, "{}").orEmpty().ifBlank { "{}" }))
             .put("systemPromptConfigs", JSONArray(plainPrefs.getString(KEY_SYSTEM_PROMPT_CONFIGS, "[]").orEmpty().ifBlank { "[]" }))
             .put("reasoningDepth", reasoningDepth)
+            .put("webSearchBlacklist", webSearchBlacklistText)
             .put("selectedApiProfileId", selectedApiProfileId)
             .put("profiles", JSONArray().also { array ->
                 profiles().forEach { profile ->
@@ -1094,6 +1137,7 @@ class AppSettings(context: Context) {
             .put("webDavServers", JSONArray().also { array ->
                 webDavServers().forEach { array.put(webDavServerJson(it, includeSecrets)) }
             })
+            .put("miniServer", miniServerConfigJson(miniServerConfig(), includeSecrets))
     }
 
     fun importSettingsJson(root: JSONObject, mode: String): String {
@@ -1132,6 +1176,14 @@ class AppSettings(context: Context) {
             messages += "系统提示词 ${imported.size} 项"
         }
         root.optString("reasoningDepth").takeIf { it in reasoningDepthValues }?.let { reasoningDepth = it }
+        root.optString("webSearchBlacklist").takeIf { it.isNotBlank() }?.let { imported ->
+            webSearchBlacklistText = if (supplement) {
+                listOf(webSearchBlacklistText, imported).joinToString("\n")
+            } else {
+                imported
+            }
+            messages += "联网搜索黑名单 ${webSearchBlockedHosts().size} 项"
+        }
         root.optJSONArray("profiles")?.let { array ->
             val imported = parseProfiles(array)
             saveProfiles(if (supplement) mergeProfiles(profiles(), imported) else imported.ifEmpty { profiles() }, root.optString("selectedApiProfileId").ifBlank { null })
@@ -1151,6 +1203,24 @@ class AppSettings(context: Context) {
             val imported = parseWebDavServers(array)
             saveWebDavServers(if (supplement) mergeWebDavServers(webDavServers(), imported) else imported)
             messages += "WebDAV ${imported.size} 项"
+        }
+        root.optJSONObject("miniServer")?.let { item ->
+            val current = miniServerConfig()
+            val imported = parseMiniServerConfig(item)
+            saveMiniServerConfig(
+                if (supplement) {
+                    imported.copy(
+                        password = imported.password.ifBlank { current.password },
+                        tlsKeyStoreBase64 = imported.tlsKeyStoreBase64.ifBlank { current.tlsKeyStoreBase64 },
+                        tlsKeyStorePassword = imported.tlsKeyStorePassword.ifBlank { current.tlsKeyStorePassword },
+                        tlsCertificateChain = imported.tlsCertificateChain.ifBlank { current.tlsCertificateChain },
+                        tlsPrivateKey = imported.tlsPrivateKey.ifBlank { current.tlsPrivateKey },
+                    )
+                } else {
+                    imported
+                },
+            )
+            messages += "微型服务器配置"
         }
         return messages.ifEmpty { listOf("没有可导入的兼容配置") }.joinToString("；")
     }
@@ -1181,6 +1251,100 @@ class AppSettings(context: Context) {
             .put("multiThread", server.multiThread)
             .put("hideAddressInDrawer", server.hideAddressInDrawer)
             .put("enabled", server.enabled)
+    }
+
+    private fun defaultMiniServerConfig(): MiniServerConfig = MiniServerConfig(
+        protocol = MINI_SERVER_PROTOCOL_HTTP,
+        host = DEFAULT_MINI_SERVER_HOST,
+        port = DEFAULT_MINI_SERVER_PORT,
+        password = "",
+        customDomains = emptyList(),
+        forceHttps = false,
+        tlsKeyStoreBase64 = "",
+        tlsKeyStorePassword = "",
+        tlsCertificateChain = "",
+        tlsPrivateKey = "",
+        spaFallback = true,
+        directoryListing = false,
+        mdnsEnabled = false,
+        mdnsName = DEFAULT_MINI_SERVER_MDNS_NAME,
+        enabled = false,
+    )
+
+    private fun miniServerConfigJson(config: MiniServerConfig, includeSecrets: Boolean): JSONObject {
+        return JSONObject()
+            .put("protocol", config.protocol)
+            .put("host", config.host)
+            .put("port", config.port)
+            .put("password", if (includeSecrets) config.password else "")
+            .put("customDomains", JSONArray(config.customDomains))
+            .put("forceHttps", config.forceHttps)
+            .put("tlsKeyStoreBase64", if (includeSecrets) config.tlsKeyStoreBase64 else "")
+            .put("tlsKeyStorePassword", if (includeSecrets) config.tlsKeyStorePassword else "")
+            .put("tlsCertificateChain", if (includeSecrets) config.tlsCertificateChain else "")
+            .put("tlsPrivateKey", if (includeSecrets) config.tlsPrivateKey else "")
+            .put("spaFallback", config.spaFallback)
+            .put("directoryListing", config.directoryListing)
+            .put("mdnsEnabled", config.mdnsEnabled)
+            .put("mdnsName", config.mdnsName)
+            .put("enabled", config.enabled)
+    }
+
+    private fun parseMiniServerConfig(item: JSONObject): MiniServerConfig {
+        val protocol = item.optString("protocol").lowercase().let {
+            if (it == MINI_SERVER_PROTOCOL_HTTPS) MINI_SERVER_PROTOCOL_HTTPS else MINI_SERVER_PROTOCOL_HTTP
+        }
+        return MiniServerConfig(
+            protocol = protocol,
+            host = item.optString("host").ifBlank { DEFAULT_MINI_SERVER_HOST },
+            port = item.optInt("port", DEFAULT_MINI_SERVER_PORT).coerceIn(1, 65535),
+            password = item.optString("password"),
+            customDomains = parseMiniServerDomains(item),
+            forceHttps = item.optBoolean("forceHttps", false),
+            tlsKeyStoreBase64 = item.optString("tlsKeyStoreBase64"),
+            tlsKeyStorePassword = item.optString("tlsKeyStorePassword"),
+            tlsCertificateChain = item.optString("tlsCertificateChain"),
+            tlsPrivateKey = item.optString("tlsPrivateKey"),
+            spaFallback = item.optBoolean("spaFallback", true),
+            directoryListing = item.optBoolean("directoryListing", false),
+            mdnsEnabled = item.optBoolean("mdnsEnabled", false),
+            mdnsName = item.optString("mdnsName").ifBlank { DEFAULT_MINI_SERVER_MDNS_NAME },
+            enabled = item.optBoolean("enabled", false),
+        )
+    }
+
+    private fun parseMiniServerDomains(item: JSONObject): List<String> {
+        val array = item.optJSONArray("customDomains")
+        if (array != null) {
+            return buildList {
+                for (index in 0 until array.length()) {
+                    array.optString(index).trim().takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }.distinct()
+        }
+        return item.optString("customDomains")
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+    }
+
+    private fun normalizeWebSearchBlacklistText(value: String): String =
+        value.lineSequence()
+            .mapNotNull(::normalizeWebSearchBlockedHost)
+            .distinct()
+            .joinToString("\n")
+
+    private fun normalizeWebSearchBlockedHost(raw: String): String? {
+        val clean = raw.trim().trimEnd('/').trim()
+        if (clean.isBlank() || clean.startsWith("#")) return null
+        val withScheme = if (clean.contains("://")) clean else "https://$clean"
+        val host = runCatching { Uri.parse(withScheme).host.orEmpty() }.getOrDefault("")
+            .lowercase()
+            .removePrefix("www.")
+            .trim('.')
+        return host.takeIf { it.isNotBlank() }
     }
 
     private fun parseProfiles(array: JSONArray): List<ApiProfile> = buildList {
@@ -1433,6 +1597,7 @@ class AppSettings(context: Context) {
         private const val KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
         private const val KEY_REFRESH_RATE_MODE = "refresh_rate_mode"
         private const val KEY_DOWNLOAD_COMPLETION_NOTIFICATIONS = "download_completion_notifications"
+        private const val KEY_MINI_SERVER_CONFIG = "mini_server_config"
         private const val KEY_FONT_SCALE_MODE = "font_scale_mode"
         private const val KEY_CUSTOM_FONT_SCALE = "custom_font_scale"
         private const val KEY_REQUEST_ROOT_ACCESS = "request_root_access"
@@ -1449,6 +1614,7 @@ class AppSettings(context: Context) {
         private const val KEY_CUSTOM_SYSTEM_PROMPTS = "custom_system_prompts"
         private const val KEY_SYSTEM_PROMPT_CONFIGS = "system_prompt_configs"
         private const val KEY_REASONING_DEPTH = "reasoning_depth"
+        private const val KEY_WEB_SEARCH_BLACKLIST = "web_search_blacklist"
         private const val KEY_MCP_SERVERS = "mcp_servers"
         private const val KEY_SSH_SERVERS = "ssh_servers"
         private const val KEY_WEBDAV_SERVERS = "webdav_servers"
@@ -1487,6 +1653,11 @@ class AppSettings(context: Context) {
         const val MAX_FONT_SCALE = 2.5f
         const val FONT_SCALE_STEP = 0.025f
         const val DEFAULT_SU_COMMAND = "su -c"
+        const val MINI_SERVER_PROTOCOL_HTTP = "http"
+        const val MINI_SERVER_PROTOCOL_HTTPS = "https"
+        const val DEFAULT_MINI_SERVER_HOST = "127.0.0.1"
+        const val DEFAULT_MINI_SERVER_PORT = 8787
+        const val DEFAULT_MINI_SERVER_MDNS_NAME = "Lyra Code"
         const val REASONING_AUTO = "auto"
         const val REASONING_LOW = "low"
         const val REASONING_MEDIUM = "medium"

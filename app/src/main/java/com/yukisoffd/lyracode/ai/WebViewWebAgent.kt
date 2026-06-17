@@ -8,6 +8,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.yukisoffd.lyracode.data.AppSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -35,7 +36,10 @@ data class WebPageResult(
     val text: String,
 )
 
-class WebViewWebAgent(context: Context) {
+class WebViewWebAgent(
+    context: Context,
+    private val settings: AppSettings,
+) {
     private val context = context
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
@@ -64,10 +68,15 @@ class WebViewWebAgent(context: Context) {
                     Log.w(TAG, "WebView search failed: ${engine.url}", it)
                 }.getOrNull()
             }.orEmpty()
-        if (results.isEmpty()) return "未找到可用搜索结果。lastError=$lastError"
+        val blockedHosts = settings.webSearchBlockedHosts()
+        if (results.isEmpty()) {
+            val blockedNote = if (blockedHosts.isNotEmpty()) " 已过滤黑名单域名: ${blockedHosts.joinToString(", ")}。" else ""
+            return "未找到可用搜索结果。$blockedNote lastError=$lastError"
+        }
         return buildString {
             appendLine("WEB_SEARCH_RESULTS schema=lyra_web_search_v2")
             appendLine("query: $cleanQuery")
+            if (blockedHosts.isNotEmpty()) appendLine("blocked_hosts: ${blockedHosts.joinToString(", ")}")
             appendLine("guidance: 已按关键词匹配度、来源质量和垃圾/聚合页信号排序。优先读取高分、官方/原始/权威来源；低分结果仅作补充，不要把搜索摘要当最终事实。")
             results.take(maxResults).forEachIndexed { index, result ->
                 appendLine()
@@ -105,6 +114,9 @@ class WebViewWebAgent(context: Context) {
     suspend fun readPage(url: String): String {
         val cleanUrl = url.trim()
         require(cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) { "只支持 http/https 网页 URL" }
+        blockedHostFor(cleanUrl)?.let { blocked ->
+            return "WEB_PAGE_READ_RESULT schema=lyra_web_page_v2\nstatus: blocked_by_user\ntitle: \nurl: $cleanUrl\nnote: 该网站已在联网搜索黑名单中，禁止读取: $blocked\n\n页面未读取。"
+        }
         var page = runCatching {
             val json = loadAndEvaluate(url = cleanUrl, script = pageScript(), timeoutMs = 10_000L)
             parsePage(json)
@@ -134,6 +146,7 @@ class WebViewWebAgent(context: Context) {
             .mapNotNull { result ->
                 val url = canonicalSearchUrl(result.url)
                 if (url.isBlank() || isSearchEngineUrl(url)) return@mapNotNull null
+                if (isBlockedUrl(url)) return@mapNotNull null
                 if (!seen.add(url)) return@mapNotNull null
                 val title = result.title.trim().take(200)
                 if (title.length < 2) return@mapNotNull null
@@ -412,6 +425,7 @@ class WebViewWebAgent(context: Context) {
             }
             if (!url.startsWith("http://") && !url.startsWith("https://")) return@mapNotNull null
             if (isSearchEngineUrl(url)) return@mapNotNull null
+            if (isBlockedUrl(url)) return@mapNotNull null
             if (title.length < 2 || !seen.add(url)) return@mapNotNull null
             WebSearchResult(title = title.take(200), url = url, snippet = "")
         }.take(limit).toList()
@@ -425,8 +439,22 @@ class WebViewWebAgent(context: Context) {
             val link = item.xmlTag("link").htmlToText()
             val snippet = item.xmlTag("description").htmlToText()
             if (title.isBlank() || !link.startsWith("http")) return@mapNotNull null
+            if (isBlockedUrl(link)) return@mapNotNull null
             WebSearchResult(title = title.take(200), url = link, snippet = snippet.take(500))
         }.take(limit).toList()
+    }
+
+    private fun isBlockedUrl(url: String): Boolean = blockedHostFor(url) != null
+
+    private fun blockedHostFor(url: String): String? {
+        val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
+            .lowercase()
+            .removePrefix("www.")
+            .trim('.')
+        if (host.isBlank()) return null
+        return settings.webSearchBlockedHosts().firstOrNull { blocked ->
+            host == blocked || host.endsWith(".$blocked")
+        }
     }
 
     private fun isSearchEngineUrl(url: String): Boolean {

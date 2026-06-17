@@ -1,4 +1,4 @@
-# Lyra Code
+<h1 align="center">Lyra Code</h1>
 
 <p align="center">
   <img src="logo.png" alt="Lyra Code Logo" width="140" />
@@ -15,14 +15,14 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.4.1-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.5.0-blue" />
   <img alt="Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/license-Dual%20License%20%2F%20AGPLv3-orange" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-HTTP%20%2F%20SSE-purple" />
 </p>
 
-Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对话、文件工具、原生文件下载、命令执行、联网搜索、MCP、SSH、WebDAV、数据备份、Skills、设备诊断和用量统计整合到移动端，让手机也能承担编程、写作、检索、远程维护和自动化任务。
+Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对话、文件工具、原生文件下载、命令执行、联网搜索、MCP、SSH、WebDAV、内置微型服务器、数据备份、Skills、设备诊断和用量统计整合到移动端，让手机也能承担编程、写作、检索、远程维护、本地网页调试和自动化任务。
 
 ## 界面预览
 
@@ -45,9 +45,9 @@ Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对
 
 - 文件读取、写入、追加、重命名、移动、删除、目录创建和全局文件搜索。
 - 支持使用应用原生 HTTP/HTTPS 客户端下载文件到工作区或 Android 共享存储，可处理重定向、自定义请求头、超时和可选 SHA-256 校验。
-- 命令执行与 Termux RunCommandService 集成，支持 stdout/stderr 回传。
+- 命令执行与 Termux RunCommandService 集成，支持 stdout/stderr 回传；命令审查改为仅拦截高危黑名单模式，不再因私有命令或新工具不在白名单内而误拦。
 - TODO 规划、过程记录、文件变更审查和差异可视化。
-- 联网搜索、网页读取和来源标注。
+- 联网搜索、网页读取、来源标注和网站黑名单，可避免 AI 打开指定域名的垃圾内容或不希望引用的网站。
 - 时间感知、地理感知和配置管理。
 - 多轮工具调用、用户审查确认、当前会话免确认。
 - Agent 会优先使用原生下载工具，仅在原生下载失败或不支持目标协议时才将 Termux `curl` / `wget` 作为备用方案。
@@ -66,6 +66,14 @@ Lyra Code 是一个面向 Android 的本地 AI Agent 应用。它把大模型对
 - SSH：支持密码或密钥登录 Linux、Windows、Git 服务器，并执行经用户确认的命令。
 - WebDAV：支持列出文件、PROPFIND、搜索、上传、下载和云备份。
 - 支持通过自然语言管理 MCP、SSH、WebDAV、Skills 和 Agent 工具配置。
+
+### 微型服务器
+
+- 内置本地 HTTP/HTTPS 静态文件服务器，可用于预览和调试本地网站、文档站和生成的前端项目。
+- 支持自定义监听主机、端口、密码认证、绑定域名、HTTPS 证书链/私钥和强制 HTTPS。
+- 在网络环境允许时，可用于 localhost、局域网、内网穿透、公网访问和 mDNS 类本地发现等场景。
+- 提供类终端实时日志，可查看连接、资源加载、404/认证失败和页面 JavaScript 报错；AI 也可读取日志辅助定位并修复本地网页问题。
+- AI 可在用户确认后通过 Agent 工具启动或关闭微型服务器。
 
 ### Skills 能力包
 
@@ -153,8 +161,11 @@ mkdir -p ~/.termux && (grep -qxF 'allow-external-apps=true' ~/.termux/termux.pro
 
 Lyra Code 会处理 API Key、SSH 密码/私钥、MCP Token、WebDAV 密码、对话内容、本地文件和远程服务器输出。请注意：
 
-- 使用 HTTP 明文 API、MCP 或 WebDAV 服务时，数据可能被中间人读取。
+- 使用 HTTP 明文 API、MCP、WebDAV 或微型服务器服务时，数据可能被中间人读取。
+- 将微型服务器暴露到局域网、内网穿透或公网时，如果目录、密码或 HTTPS 配置不当，可能泄露本地文件。启用外部访问前应检查工作区和认证配置。
 - 让 AI 执行命令、修改文件、上传/下载文件或操作远程服务器前，应审查工具调用内容。
+- `run_command` 不再使用固定命令白名单，但仍会拦截 `rm -rf /`、写入 `/dev/block`、`mkfs` 等明显高危操作；执行前仍应人工审查。
+- 联网搜索黑名单保存在本机设置中。可填写 `x.com`、`https://x.com` 或 `https://x.com/`，应用会归一化为域名并拦截对应域名及其子域名。
 - 包含密钥的备份文件应妥善保存，不要公开分享。
 - 本项目不会替你判断远程脚本、MCP Server、Skills 仓库或 SSH 命令是否可信。
 

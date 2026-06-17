@@ -17,10 +17,12 @@ import com.yukisoffd.lyracode.data.ChatMessage
 import com.yukisoffd.lyracode.data.ConversationStore
 import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
+import com.yukisoffd.lyracode.data.MiniServerConfig
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
+import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.InstalledAppCollector
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
@@ -157,6 +159,7 @@ class OpenAiAgent(
     private val systemCommandExecutor: SystemCommandExecutor,
     private val webDavClient: WebDavClient,
     private val backupManager: BackupManager,
+    private val miniServerManager: MiniServerManager,
     private val downloadTaskManager: DownloadTaskManager,
     private val scheduledTaskManager: ScheduledTaskManager,
     private val responseCache: AiResponseCache? = null,
@@ -1316,6 +1319,9 @@ class OpenAiAgent(
                     configChangedHandler()
                     ToolExecution("已用补充模式导入备份: $result")
                 }
+                "get_mini_server_status" -> ToolExecution(miniServerManager.statusJson().toString())
+                "read_mini_server_logs" -> ToolExecution(readMiniServerLogs(args))
+                "manage_mini_server" -> ToolExecution(manageMiniServer(args))
                 "run_command" -> {
                     val command = args.toolCommandArgument()
                     if (isFileSearchCommand(command)) {
@@ -2202,6 +2208,117 @@ class OpenAiAgent(
         .put("model", task.model)
         .toString()
 
+    private fun manageMiniServer(args: JSONObject): String {
+        val action = args.optString("action", "status").lowercase(Locale.US)
+        val current = settings.miniServerConfig()
+        val config = current.copy(
+            protocol = args.optString("protocol").ifBlank { current.protocol }.lowercase(Locale.US).let {
+                if (it == AppSettings.MINI_SERVER_PROTOCOL_HTTPS) AppSettings.MINI_SERVER_PROTOCOL_HTTPS else AppSettings.MINI_SERVER_PROTOCOL_HTTP
+            },
+            host = args.optString("host").ifBlank { current.host },
+            port = if (args.has("port")) args.optInt("port", current.port).coerceIn(1, 65535) else current.port,
+            password = if (args.has("password")) args.optString("password") else current.password,
+            customDomains = miniServerDomains(args, current.customDomains),
+            forceHttps = if (args.has("force_https")) args.optBoolean("force_https") else current.forceHttps,
+            tlsKeyStoreBase64 = if (args.has("tls_key_store_base64")) args.optString("tls_key_store_base64") else current.tlsKeyStoreBase64,
+            tlsKeyStorePassword = if (args.has("tls_key_store_password")) args.optString("tls_key_store_password") else current.tlsKeyStorePassword,
+            tlsCertificateChain = if (args.has("tls_certificate_chain")) args.optString("tls_certificate_chain") else current.tlsCertificateChain,
+            tlsPrivateKey = if (args.has("tls_private_key")) args.optString("tls_private_key") else current.tlsPrivateKey,
+            spaFallback = if (args.has("spa_fallback")) args.optBoolean("spa_fallback") else current.spaFallback,
+            directoryListing = if (args.has("directory_listing")) args.optBoolean("directory_listing") else current.directoryListing,
+            mdnsEnabled = if (args.has("mdns_enabled")) args.optBoolean("mdns_enabled") else current.mdnsEnabled,
+            mdnsName = args.optString("mdns_name").ifBlank { current.mdnsName },
+        )
+        val status = when (action) {
+            "status" -> miniServerManager.status()
+            "update" -> {
+                settings.saveMiniServerConfig(config)
+                miniServerManager.status()
+            }
+            "start" -> miniServerManager.start(config.copy(enabled = true))
+            "stop" -> miniServerManager.stop()
+            "restart" -> miniServerManager.restart(config.copy(enabled = true))
+            "reset" -> {
+                if (miniServerManager.status().running) miniServerManager.stop()
+                settings.saveMiniServerConfig(
+                    MiniServerConfig(
+                        protocol = AppSettings.MINI_SERVER_PROTOCOL_HTTP,
+                        host = AppSettings.DEFAULT_MINI_SERVER_HOST,
+                        port = AppSettings.DEFAULT_MINI_SERVER_PORT,
+                        password = "",
+                        customDomains = emptyList(),
+                        forceHttps = false,
+                        tlsKeyStoreBase64 = "",
+                        tlsKeyStorePassword = "",
+                        tlsCertificateChain = "",
+                        tlsPrivateKey = "",
+                        spaFallback = true,
+                        directoryListing = false,
+                        mdnsEnabled = false,
+                        mdnsName = AppSettings.DEFAULT_MINI_SERVER_MDNS_NAME,
+                        enabled = false,
+                    ),
+                )
+                miniServerManager.status()
+            }
+            else -> error("未知微型服务器动作: $action")
+        }
+        return miniServerManager.statusJson()
+            .put("action", action)
+            .put("running", status.running)
+            .put("security_note", miniServerSecurityNote(config))
+            .toString()
+    }
+
+    private fun readMiniServerLogs(args: JSONObject): String {
+        val limit = args.optInt("limit", 120).coerceIn(1, 500)
+        val level = args.optString("level").lowercase(Locale.US).takeIf { it in setOf("debug", "info", "warn", "error") }.orEmpty()
+        return miniServerManager.logsJson(limit, level).toString()
+    }
+
+    private fun miniServerDomains(args: JSONObject, current: List<String>): List<String> {
+        val array = args.optJSONArray("custom_domains")
+        if (array != null) {
+            return buildList {
+                for (index in 0 until array.length()) {
+                    array.optString(index).trim().takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }.distinct()
+        }
+        return args.optString("custom_domains")
+            .takeIf { it.isNotBlank() }
+            ?.lineSequence()
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.distinct()
+            ?.toList()
+            ?: current
+    }
+
+    private fun miniServerSecurityNote(config: MiniServerConfig): String {
+        return buildString {
+            append("微型服务器以当前工作区作为静态站点根目录。")
+            if (config.protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTPS) {
+                append(" HTTPS 使用内置自签名证书，浏览器可能提示不受信任；公网或正式分享建议通过反向代理或内网穿透提供可信 TLS。")
+            }
+            if (config.forceHttps) {
+                append(" 已开启强制 HTTPS，HTTP 请求会被重定向到 HTTPS。")
+            }
+            if (config.customDomains.isNotEmpty()) {
+                append(" 绑定域名：${config.customDomains.joinToString(", ")}。")
+            }
+            if (config.host == "0.0.0.0" || config.host == "::") {
+                append(" 当前监听地址会暴露到局域网；配合端口映射或内网穿透时也可能被公网访问。")
+            }
+            if (config.password.isBlank()) {
+                append(" 当前未设置访问密码，请仅在可信网络中使用。")
+            }
+            if (config.protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTP) {
+                append(" HTTP 明文传输可能泄露访问路径、内容和密码。")
+            }
+        }
+    }
+
     private fun searchConversationHistory(args: JSONObject): String {
         val query = args.optString("query").trim()
         val start = args.optString("start_time").takeIf { it.isNotBlank() }?.let(::parseAgentTime) ?: Long.MIN_VALUE
@@ -2493,6 +2610,25 @@ class OpenAiAgent(
                 "导入 Lyra Code 备份（补充模式）",
                 "会把备份中的兼容配置和对话追加到当前软件；Agent 导入固定使用补充模式以降低数据丢失风险。",
             )
+            "manage_mini_server" -> if (args.optString("action").lowercase(Locale.US) in setOf("update", "start", "stop", "restart", "reset")) {
+                ToolApprovalRequest(
+                    conversationId,
+                    call.name,
+                    call.rawArguments,
+                    "管理微型服务器：${args.optString("action")}",
+                    buildString {
+                        append("会修改或控制本地 HTTP 静态站点服务，以当前工作区作为站点根目录。")
+                        if (args.optString("host") == "0.0.0.0" || args.optString("host") == "::") {
+                            append(" 监听地址会暴露到局域网，配合内网穿透或公网映射会被外部访问。")
+                        }
+                        if (args.has("password") && args.optString("password").isBlank()) {
+                            append(" 未设置密码时请仅用于可信网络。")
+                        }
+                    },
+                )
+            } else {
+                null
+            }
             "manage_app_config" -> ToolApprovalRequest(
                 conversationId,
                 call.name,
@@ -2836,6 +2972,7 @@ class OpenAiAgent(
             Skills 可能包含桌面、云端或外部服务假设，使用前必须适配 Android、Termux 和 Lyra Code 工具限制。
             MCP 工具来自用户配置的远程或局域网 MCP Server，仅在工具名以 mcp_ 开头时代表外部 MCP 工具。调用 MCP 工具前应用会请求用户确认；不要把 MCP 工具当成本地文件工具使用，也不要假设 MCP Server 可访问 Android 本机工作区。
             下载 http/https 文件时优先调用 download_file，直接保存到工作区或 Android 共享存储；可提供请求头和 SHA-256 校验。只有 download_file 明确失败、被禁用或不支持目标协议时，才可把 Termux 的 curl/wget 作为最后备用手段。
+            需要预览或调试工作区内静态网站、Vue/Vite/VitePress 构建产物、HTML/CSS/JS 文件时，优先使用 get_mini_server_status 和 manage_mini_server 启动 Lyra Code 微型服务器。默认监听 127.0.0.1；若用户要求局域网、内网穿透或公网访问，可设置 host=0.0.0.0 并提醒设置密码和 HTTP 明文风险。HTTPS 可使用自定义证书库/PEM 证书链和私钥；未配置时使用内置自签名证书，浏览器可能提示不受信任。custom_domains 只是访问域名展示/跳转配置，域名 DNS 或内网穿透仍需用户自行指向设备。站点资源加载失败、404、认证失败或页面 JavaScript 报错时，调用 read_mini_server_logs 读取最近日志再修复。
             只有在工具列表提供 run_command，且需要安装包、运行脚本、Git、长输出或非空目录删除时才调用 run_command；如果工具列表没有 run_command，说明用户未授予 Termux 通信权限或已禁用该工具，不要假设可执行命令。
             需要按文件名、扩展名或路径片段查找文件时，必须先调用 search_files；不要用 run_command 执行 find、fd、locate 或自行写搜索脚本来代替 search_files。
             search_files 的 query 只放文件名或关键词，例如 AvatarSkin.json、build.gradle、MainActivity；path 默认为 "."，除非用户明确限定子目录。
@@ -2849,8 +2986,8 @@ class OpenAiAgent(
             run_command 会等待 Termux 回传 exit_code、stdout、stderr；命令非 0 退出也会返回 stderr，看到报错后应直接修正。不要运行不会退出的长期驻留命令。
             如遇回传超时或输出过大，再让命令把结果写入工作目录文件并用 read_file 读取。Shell 重定向 stdout 和 stderr 时必须写成 "> output.txt 2>&1"，文件名和 2>&1 之间要有空格。
             需要联网获取最新信息时，可使用 web_search 搜索，再用 read_web_page 读取候选网页正文；回答中应基于读取到的网页内容判断，不要把搜索摘要当作最终事实。
-            web_search 会返回排序后的候选网页、相关性提示和可能的低质量信号。优先读取官方文档、原始发布源、权威媒体或和问题关键词高度匹配的页面；遇到 SEO 聚合页、广告页、搜索结果页、论坛搬运或摘要明显无关时不要反复读取，应换用更精确关键词、限定站点或读取排名更高的可信来源。
-            read_web_page 会标注 readable、limited 或 blocked_or_dynamic。若页面提示人机验证、Cloudflare、403、登录墙、JavaScript 渲染不足或正文过短，不要把该内容当事实依据；改读其他来源，必要时告知用户该网页存在访问防护。
+            web_search 会返回排序后的候选网页、相关性提示和可能的低质量信号，并自动过滤用户在设置中加入的网站黑名单。优先读取官方文档、原始发布源、权威媒体或和问题关键词高度匹配的页面；遇到 SEO 聚合页、广告页、搜索结果页、论坛搬运或摘要明显无关时不要反复读取，应换用更精确关键词、限定站点或读取排名更高的可信来源。
+            read_web_page 会标注 readable、limited、blocked_by_user 或 blocked_or_dynamic。若页面被用户黑名单拦截，不要绕过黑名单；若页面提示人机验证、Cloudflare、403、登录墙、JavaScript 渲染不足或正文过短，不要把该内容当事实依据；改读其他来源，必要时告知用户该网页存在访问防护。
             当最终回答依赖 read_web_page 或网页搜索结果时，必须先调用 mark_web_sources 声明本轮实际引用的网页；最终回答中把受网页支持的关键结论就近标注来源链接，方便用户点击核对。不要伪造未读取网页的来源。
             WebDAV 云备份未指定 remote_path 时默认上传到 /LyraCode/lyra_backup_latest.zip；从 WebDAV 导入备份时 remote_path 可留空，应用会优先读取 latest 备份，若不存在则自动查找 /LyraCode 下最新的 Lyra backup zip。不要让用户手动猜时间戳文件名。
             当用户要求“帮我添加/配置/安装/启用/禁用/删除/修改”MCP 服务器、SSH 连接、Skills 或 Agent 工具时，使用 manage_app_config。若用户给的是介绍网页，先 web_search/read_web_page 获取配置 JSON、zip 下载链接或连接参数；缺少 API key、密码、私钥等必要敏感信息时，先向用户索取，不能编造。manage_app_config 会触发用户确认；被拒绝后按用户反馈调整，不要重复提交相同配置。
@@ -2955,6 +3092,38 @@ class OpenAiAgent(
                 ),
             ),
         )
+        .put(function("get_mini_server_status", "读取 Lyra Code 微型服务器运行状态、当前工作区、监听地址、本机 URL 和局域网访问 URL。"))
+        .put(
+            functionWithOptional(
+                "read_mini_server_logs",
+                "读取 Lyra Code 微型服务器最近终端日志，包括连接、资源加载、404、认证失败和页面 JavaScript 报错。用于调试本地静态站点、Vue/Vite/VitePress/HTML/CSS/JS 页面问题。level 可选 debug/info/warn/error；limit 最大 500。",
+                required = emptyList(),
+                optional = listOf("limit" to "integer", "level" to "string"),
+            ),
+        )
+        .put(
+            functionWithOptional(
+                "manage_mini_server",
+                "启动、停止、重启或更新 Lyra Code 内置微型 HTTP/HTTPS 静态服务器。服务器以当前工作区作为站点根目录，可用于 Vue/Vite/VitePress/HTML/CSS/JS 静态站点调试。action=status/update/start/stop/restart/reset；host=127.0.0.1 仅本机，0.0.0.0 面向局域网/公网映射；password 为空表示不启用 Basic 认证。HTTPS 支持 tls_key_store_base64/tls_key_store_password 或 tls_certificate_chain/tls_private_key；force_https 会把 HTTP 请求重定向到 HTTPS。",
+                required = listOf("action" to "string"),
+                optional = listOf(
+                    "protocol" to "string",
+                    "host" to "string",
+                    "port" to "integer",
+                    "password" to "string",
+                    "custom_domains" to "array:string",
+                    "force_https" to "boolean",
+                    "tls_key_store_base64" to "string",
+                    "tls_key_store_password" to "string",
+                    "tls_certificate_chain" to "string",
+                    "tls_private_key" to "string",
+                    "spa_fallback" to "boolean",
+                    "directory_listing" to "boolean",
+                    "mdns_enabled" to "boolean",
+                    "mdns_name" to "string",
+                ),
+            ),
+        )
         .put(
             functionWithOptional(
                 "search_conversation_history",
@@ -2989,8 +3158,8 @@ class OpenAiAgent(
             )
         }
         definitions
-        .put(function("web_search", "使用内嵌 WebView 搜索互联网，返回候选网页标题、URL 和摘要。需要最新信息或网页资料时先调用。", "query" to "string", "limit" to "integer"))
-        .put(function("read_web_page", "使用内嵌 WebView 打开并读取 http/https 网页正文。应在 web_search 后读取可信候选网页，再基于网页内容回答。", "url" to "string"))
+        .put(function("web_search", "使用内嵌 WebView 搜索互联网，返回候选网页标题、URL 和摘要。会自动过滤用户设置的网站黑名单；需要最新信息或网页资料时先调用。", "query" to "string", "limit" to "integer"))
+        .put(function("read_web_page", "使用内嵌 WebView 打开并读取 http/https 网页正文。会拒绝读取用户设置的网站黑名单域名；应在 web_search 后读取可信候选网页，再基于网页内容回答。", "url" to "string"))
         .put(function("mark_web_sources", "网页来源标注工具。只在回答依赖网页内容时调用；sources 为数组，每项包含 title、url、used_for。调用后最终回答必须在相应结论旁使用 Markdown 链接标注来源。", "sources" to "array"))
         .put(
             functionWithOptional(
@@ -3442,6 +3611,9 @@ class OpenAiAgent(
             "global_rename_move",
             "download_file",
             "manage_scheduled_tasks",
+            "get_mini_server_status",
+            "read_mini_server_logs",
+            "manage_mini_server",
             "search_conversation_history",
             "read_conversation_history",
             "search_files",

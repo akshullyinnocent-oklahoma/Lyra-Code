@@ -15,6 +15,7 @@ import com.yukisoffd.lyracode.data.AuditLogStore
 import com.yukisoffd.lyracode.data.BackupManager
 import com.yukisoffd.lyracode.data.ConversationStore
 import com.yukisoffd.lyracode.mcp.McpClientManager
+import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.termux.TermuxExecutor
@@ -181,6 +182,7 @@ class ScheduledTaskWorker(
         val workspaceManager = WorkspaceManager(applicationContext, settings)
         val nativeFileManager = NativeFileManager(applicationContext, workspaceManager)
         val globalFileManager = GlobalFileManager()
+        val miniServerManager = MiniServerManager(applicationContext, settings, workspaceManager)
         val downloadTaskManager = DownloadTaskManager.getInstance(
             applicationContext,
             settings,
@@ -195,12 +197,13 @@ class ScheduledTaskWorker(
             globalFileManager = globalFileManager,
             termuxExecutor = TermuxExecutor(applicationContext, auditLogStore),
             workspaceManager = workspaceManager,
-            webAgent = WebViewWebAgent(applicationContext),
+            webAgent = WebViewWebAgent(applicationContext, settings),
             mcpClientManager = McpClientManager(settings),
             sshExecutor = SshExecutor(settings),
             systemCommandExecutor = SystemCommandExecutor(applicationContext, settings),
             webDavClient = WebDavClient(),
             backupManager = BackupManager(applicationContext, settings, conversationStore),
+            miniServerManager = miniServerManager,
             downloadTaskManager = downloadTaskManager,
             scheduledTaskManager = scheduledTaskManager,
             responseCache = AiResponseCache(applicationContext.cacheDir),

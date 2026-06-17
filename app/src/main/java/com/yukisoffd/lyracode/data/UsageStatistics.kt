@@ -1,6 +1,8 @@
 package com.yukisoffd.lyracode.data
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Calendar
 
 enum class UsageStatsPeriod(val label: String) {
@@ -21,6 +23,7 @@ data class UsageStatsSummary(
     val userMessageCount: Int,
     val assistantMessageCount: Int,
     val toolMessageCount: Int,
+    val modelRequestCount: Int,
 )
 
 class UsageStatisticsRepository(
@@ -37,24 +40,37 @@ class UsageStatisticsRepository(
         var userMessageCount = 0
         var assistantMessageCount = 0
         var toolMessageCount = 0
+        var modelRequestCount = 0
 
         conversationStore.conversations().forEach { conversation ->
+            var repeatedContextTokens = 0L
             conversationStore.messages(conversation.id).forEach { message ->
-                if (message.createdAt < range.first || message.createdAt >= range.second) return@forEach
+                val inRange = message.createdAt >= range.first && message.createdAt < range.second
+                if (inRange) {
+                    when (message.role.lowercase()) {
+                        "user" -> {
+                            conversationsWithUserInput += message.conversationId
+                            userMessageCount++
+                        }
+                        "tool" -> toolMessageCount++
+                        "assistant" -> assistantMessageCount++
+                    }
+                }
+
                 when (message.role.lowercase()) {
                     "user" -> {
-                        conversationsWithUserInput += message.conversationId
-                        userMessageCount++
-                        userInputTokens += tokenizer.count(message.content)
+                        repeatedContextTokens += message.promptInputCost()
                     }
                     "tool" -> {
-                        toolMessageCount++
-                        userInputTokens += tokenizer.count(message.content)
+                        repeatedContextTokens += message.promptInputCost()
                     }
                     "assistant" -> {
-                        assistantMessageCount++
-                        aiOutputTokens += tokenizer.count(message.content)
-                        aiOutputTokens += tokenizer.count(message.thinking)
+                        if (inRange) {
+                            modelRequestCount++
+                            userInputTokens += REQUEST_STATIC_INPUT_TOKENS + repeatedContextTokens
+                            aiOutputTokens += message.assistantOutputCost()
+                        }
+                        repeatedContextTokens += message.promptInputCost()
                     }
                 }
             }
@@ -70,7 +86,55 @@ class UsageStatisticsRepository(
             userMessageCount = userMessageCount,
             assistantMessageCount = assistantMessageCount,
             toolMessageCount = toolMessageCount,
+            modelRequestCount = modelRequestCount,
         )
+    }
+
+    private fun ChatMessage.promptInputCost(): Long {
+        return when (role.lowercase()) {
+            "user" -> MESSAGE_WRAPPER_TOKENS + tokenizer.count(content)
+            "tool" -> MESSAGE_WRAPPER_TOKENS + tokenizer.count(content)
+            "assistant" -> MESSAGE_WRAPPER_TOKENS + assistantOutputCost()
+            else -> MESSAGE_WRAPPER_TOKENS + tokenizer.count(content) + tokenizer.count(thinking)
+        }
+    }
+
+    private fun ChatMessage.assistantOutputCost(): Long {
+        return tokenizer.count(content) +
+            tokenizer.count(thinking) +
+            tokenizer.count(toolCallsOutputText(rawJson))
+    }
+
+    private fun toolCallsOutputText(rawJson: String?): String {
+        val raw = rawJson?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return ""
+        val calls = raw.optJSONArray("tool_calls") ?: return ""
+        return buildString {
+            for (index in 0 until calls.length()) {
+                val call = calls.optJSONObject(index) ?: continue
+                appendToolCallOutput(call)
+                append('\n')
+            }
+        }
+    }
+
+    private fun StringBuilder.appendToolCallOutput(call: JSONObject) {
+        val function = call.optJSONObject("function")
+        if (function != null) {
+            append(function.optString("name"))
+            append('\n')
+            append(function.optString("arguments"))
+            return
+        }
+        append(call.optString("name"))
+        append('\n')
+        val input = call.opt("input")
+        when (input) {
+            is JSONObject, is JSONArray -> append(input.toString())
+            null -> append(call.toString())
+            else -> append(input.toString())
+        }
     }
 
     private fun periodRange(period: UsageStatsPeriod, anchorAt: Long): Pair<Long, Long> {
@@ -99,5 +163,10 @@ class UsageStatisticsRepository(
             UsageStatsPeriod.TOTAL -> Unit
         }
         return start.timeInMillis to end.timeInMillis
+    }
+
+    private companion object {
+        private const val REQUEST_STATIC_INPUT_TOKENS = 1024L
+        private const val MESSAGE_WRAPPER_TOKENS = 8L
     }
 }

@@ -134,7 +134,7 @@ internal fun UsageStatsScreen(controller: ChatController) {
                 Column(Modifier.weight(1f)) {
                     Text("使用统计", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        "按消息时间统计；thinking 计入 AI 输出，工具结果计入用户输入。",
+                        "按模型请求时间估算；会重复计入上下文、工具结果和静态提示词成本。",
                         color = KimiMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -229,19 +229,21 @@ private fun UsageStatsContent(summary: UsageStatsSummary) {
     )
     UsageMetricCard(
         icon = Icons.AutoMirrored.Filled.Input,
-        title = "用户输入 Tokens",
+        title = "请求输入 Tokens",
         value = formatStatsNumber(summary.userInputTokens),
-        description = "用户消息 + 工具调用结果",
+        description = "每次请求的上下文 + 工具结果 + 固定提示词估算",
     )
     UsageMetricCard(
         icon = Icons.Default.Output,
-        title = "AI 输出 Tokens",
+        title = "模型输出 Tokens",
         value = formatStatsNumber(summary.aiOutputTokens),
-        description = "AI 正文 + thinking 思维链",
+        description = "AI 正文 + thinking + 工具调用参数",
     )
 
     KimiCardBox {
         Text("明细", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        KimiDivider()
+        UsageDetailRow(Icons.Default.Analytics, "模型请求", "${summary.modelRequestCount} 次")
         KimiDivider()
         UsageDetailRow(Icons.Default.Forum, "用户消息", "${summary.userMessageCount} 条")
         KimiDivider()
@@ -251,7 +253,7 @@ private fun UsageStatsContent(summary: UsageStatsSummary) {
     }
 
     Text(
-        "Token 数由本地 DeepSeek V3 tokenizer 数据估算，不访问网络。不同服务商的实际计费 token 可能因模板和 tokenizer 差异略有不同。",
+        "Token 数由本地 DeepSeek V3 tokenizer 估算，不访问网络。当前口径按每次模型请求重复计算上下文，并为系统提示词、工具 schema 和消息模板加入固定开销；不同服务商的 tokenizer、图片计费、缓存折扣和实际 usage 仍可能不同。",
         color = KimiMuted,
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(horizontal = 6.dp),

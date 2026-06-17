@@ -186,6 +186,7 @@ import com.yukisoffd.lyracode.data.Conversation
 import com.yukisoffd.lyracode.data.ConversationStore
 import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
+import com.yukisoffd.lyracode.data.MiniServerConfig
 import com.yukisoffd.lyracode.data.RoleplayScenario
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
@@ -195,6 +196,7 @@ import com.yukisoffd.lyracode.data.UpdateDownloadProgress
 import com.yukisoffd.lyracode.data.UpdateManager
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.mcp.McpClientManager
+import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
 import com.yukisoffd.lyracode.system.SystemCommandExecutor
 import com.yukisoffd.lyracode.termux.TermuxExecutor
@@ -205,6 +207,7 @@ import com.yukisoffd.lyracode.workspace.NativeFileManager
 import com.yukisoffd.lyracode.workspace.UploadedFile
 import com.yukisoffd.lyracode.workspace.UploadedFileManager
 import com.yukisoffd.lyracode.workspace.WorkspaceManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -234,6 +237,7 @@ internal fun SettingsScreen(
     systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
     backupManager: BackupManager,
+    miniServerManager: MiniServerManager,
     workspaceDisplayName: String,
     skills: List<SkillPack>,
     skillStatus: String,
@@ -264,7 +268,8 @@ internal fun SettingsScreen(
     fun navigateBackFromDetail() {
         detail = when (detail) {
             "device" -> "about"
-            "font", "refresh_rate" -> "theme"
+            "theme_mode", "font", "refresh_rate" -> "theme"
+            "mini_server_logs" -> "mini_server"
             else -> null
         }
     }
@@ -281,8 +286,10 @@ internal fun SettingsScreen(
             val forward = when {
                 initialState == "device" && targetState == "about" -> false
                 initialState == "about" && targetState == "device" -> true
-                initialState in setOf("font", "refresh_rate") && targetState == "theme" -> false
-                initialState == "theme" && targetState in setOf("font", "refresh_rate") -> true
+                initialState in setOf("theme_mode", "font", "refresh_rate") && targetState == "theme" -> false
+                initialState == "theme" && targetState in setOf("theme_mode", "font", "refresh_rate") -> true
+                initialState == "mini_server_logs" && targetState == "mini_server" -> false
+                initialState == "mini_server" && targetState == "mini_server_logs" -> true
                 targetState == null -> false
                 else -> true
             }
@@ -301,15 +308,19 @@ internal fun SettingsScreen(
                     "workspace" -> WorkspaceSettings(workspaceDisplayName, workspaceManager, onPickWorkspace)
                     "theme" -> ThemeSettings(
                         themeMode = themeMode,
-                        onThemeModeChange = onThemeModeChange,
                         dynamicColorEnabled = dynamicColorEnabled,
                         onDynamicColorChange = onDynamicColorChange,
                         refreshRateMode = refreshRateMode,
                         onRefreshRateModeChange = onRefreshRateModeChange,
                         fontScaleMode = fontScaleMode,
                         customFontScale = customFontScale,
+                        onOpenThemeModeSettings = { detail = "theme_mode" },
                         onOpenFontSettings = { detail = "font" },
                         onOpenRefreshRateSettings = { detail = "refresh_rate" },
+                    )
+                    "theme_mode" -> ThemeModeSettings(
+                        themeMode = themeMode,
+                        onThemeModeChange = onThemeModeChange,
                     )
                     "refresh_rate" -> RefreshRateSettings(
                         refreshRateMode = refreshRateMode,
@@ -328,6 +339,18 @@ internal fun SettingsScreen(
                     "mcp" -> McpSettings(settings, mcpClientManager, controller.settingsRevision.intValue)
                     "ssh" -> SshSettings(settings, sshExecutor, controller.settingsRevision.intValue)
                     "webdav" -> WebDavSettings(settings, webDavClient, controller.settingsRevision.intValue)
+                    "mini_server" -> MiniServerSettings(
+                        settings,
+                        miniServerManager,
+                        controller.settingsRevision.intValue,
+                        onOpenLogs = { detail = "mini_server_logs" },
+                    )
+                    "mini_server_logs" -> MiniServerLogSettings(miniServerManager)
+                    "web_search" -> WebSearchSettings(
+                        settings = settings,
+                        externalRevision = controller.settingsRevision.intValue,
+                        onChanged = { controller.settingsRevision.intValue++ },
+                    )
                     "backup" -> BackupSettings(
                         settings = settings,
                         webDavClient = webDavClient,
@@ -373,6 +396,8 @@ internal fun SettingsScreen(
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Cloud, "模型服务", "配置 AI 服务商、API Key 与默认模型") { detail = "model" }
                 KimiDivider()
+                KimiMenuRow(Icons.Default.Search, "联网搜索", "配置网站黑名单，过滤垃圾或不可信来源") { detail = "web_search" }
+                KimiDivider()
                 KimiMenuRow(Icons.Default.Folder, "工作目录", "当前：$workspaceDisplayName") { detail = "workspace" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Terminal, "Termux", "配置本地命令执行与路径映射") { detail = "termux" }
@@ -382,6 +407,8 @@ internal fun SettingsScreen(
                 KimiMenuRow(Icons.Default.Dns, "SSH 连接", "配置可由 AI 调用的远程服务器") { detail = "ssh" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Cloud, "WebDAV", "配置云端文件与备份服务器") { detail = "webdav" }
+                KimiDivider()
+                KimiMenuRow(Icons.Default.Language, "微型服务器", "工作区 HTTP 静态站点调试") { detail = "mini_server" }
             }
             KimiSectionLabel("个性化")
             KimiCardBox {
@@ -446,8 +473,10 @@ internal fun SettingsDetailPage(
 internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "profile" -> "个人资料"
     "model" -> "模型服务"
+    "web_search" -> "联网搜索"
     "workspace" -> "工作目录"
     "theme" -> "主题设置"
+    "theme_mode" -> "主题模式"
     "font" -> "字体大小"
     "refresh_rate" -> "刷新率"
     "permissions" -> "应用权限"
@@ -459,6 +488,8 @@ internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "mcp" -> "MCP 服务器"
     "ssh" -> "SSH 连接"
     "webdav" -> "WebDAV"
+    "mini_server" -> "微型服务器"
+    "mini_server_logs" -> "终端日志"
     "backup" -> "数据导出导入"
     "prompts" -> "系统提示词"
     "skills" -> "Skills"
@@ -1050,25 +1081,16 @@ internal fun WorkspaceSettings(
 @Composable
 internal fun ThemeSettings(
     themeMode: String,
-    onThemeModeChange: (String) -> Unit,
     dynamicColorEnabled: Boolean,
     onDynamicColorChange: (Boolean) -> Unit,
     refreshRateMode: String,
     onRefreshRateModeChange: (String) -> Unit,
     fontScaleMode: String,
     customFontScale: Float,
+    onOpenThemeModeSettings: () -> Unit,
     onOpenFontSettings: () -> Unit,
     onOpenRefreshRateSettings: () -> Unit,
 ) {
-    KimiCardBox {
-        Text("主题模式", style = MaterialTheme.typography.titleMedium)
-        KimiDivider()
-        ThemeOptionRow("跟随系统", AppSettings.THEME_SYSTEM, themeMode, onThemeModeChange)
-        KimiDivider()
-        ThemeOptionRow("浅色", AppSettings.THEME_LIGHT, themeMode, onThemeModeChange)
-        KimiDivider()
-        ThemeOptionRow("深色", AppSettings.THEME_DARK, themeMode, onThemeModeChange)
-    }
     KimiCardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -1081,9 +1103,120 @@ internal fun ThemeSettings(
             Switch(checked = dynamicColorEnabled, onCheckedChange = onDynamicColorChange)
         }
         KimiDivider()
+        KimiMenuRow(Icons.Default.Palette, "主题模式", themeName(themeMode), onOpenThemeModeSettings)
+        KimiDivider()
         KimiMenuRow(Icons.Default.FormatSize, "字体大小", fontScaleName(fontScaleMode, customFontScale), onOpenFontSettings)
         KimiDivider()
         KimiMenuRow(Icons.Default.Speed, "刷新率", refreshRateName(refreshRateMode), onOpenRefreshRateSettings)
+    }
+}
+
+@Composable
+internal fun WebSearchSettings(
+    settings: AppSettings,
+    externalRevision: Int = 0,
+    onChanged: () -> Unit,
+) {
+    var blacklist by rememberSaveable(externalRevision) { mutableStateOf(settings.webSearchBlacklistText) }
+    var notice by remember { mutableStateOf("") }
+    val blockedCount = remember(blacklist, externalRevision) {
+        blacklist.lineSequence()
+            .map { raw ->
+                val clean = raw.trim().trimEnd('/').trim()
+                if (clean.isBlank() || clean.startsWith("#")) "" else {
+                    val withScheme = if (clean.contains("://")) clean else "https://$clean"
+                    runCatching { Uri.parse(withScheme).host.orEmpty() }.getOrDefault("")
+                        .lowercase()
+                        .removePrefix("www.")
+                        .trim('.')
+                }
+            }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .count()
+    }
+    KimiCardBox {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f)) {
+                Text("网站黑名单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "AI 联网搜索和网页读取会跳过这些域名。支持每行填写域名或完整 URL。",
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        KimiDivider()
+        OutlinedTextField(
+            value = blacklist,
+            onValueChange = {
+                blacklist = it
+                notice = ""
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("每行一个域名或 URL") },
+            placeholder = { Text("x.com\nhttps://example.com/\nbaijiahao.baidu.com") },
+            minLines = 8,
+            maxLines = 14,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+        )
+        Text(
+            "保存后会自动归一化：移除协议、尾部斜杠和 www. 前缀；子域名也会被拦截，例如 example.com 会匹配 news.example.com。",
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = {
+                    settings.webSearchBlacklistText = blacklist
+                    blacklist = settings.webSearchBlacklistText
+                    notice = "已保存 ${settings.webSearchBlockedHosts().size} 个黑名单域名"
+                    onChanged()
+                },
+                shape = KimiPillShape,
+            ) {
+                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("保存")
+            }
+            OutlinedButton(
+                onClick = {
+                    blacklist = ""
+                    settings.webSearchBlacklistText = ""
+                    notice = "已清空联网搜索黑名单"
+                    onChanged()
+                },
+                shape = KimiPillShape,
+            ) {
+                Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("清空")
+            }
+        }
+        val summary = if (notice.isNotBlank()) notice else "当前将保存 $blockedCount 个域名"
+        Text(summary, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+internal fun ThemeModeSettings(
+    themeMode: String,
+    onThemeModeChange: (String) -> Unit,
+) {
+    KimiCardBox {
+        Text("主题模式", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "选择跟随系统、浅色或深色模式。返回主题设置后，其他外观选项会保持当前位置。",
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        KimiDivider()
+        ThemeOptionRow("跟随系统", AppSettings.THEME_SYSTEM, themeMode, onThemeModeChange)
+        KimiDivider()
+        ThemeOptionRow("浅色", AppSettings.THEME_LIGHT, themeMode, onThemeModeChange)
+        KimiDivider()
+        ThemeOptionRow("深色", AppSettings.THEME_DARK, themeMode, onThemeModeChange)
     }
 }
 
@@ -1975,6 +2108,444 @@ internal fun defaultWebDavServer(): WebDavServerConfig = WebDavServerConfig(
 )
 
 @Composable
+internal fun MiniServerSettings(
+    settings: AppSettings,
+    miniServerManager: MiniServerManager,
+    externalRevision: Int = 0,
+    onOpenLogs: () -> Unit = {},
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var revision by remember { mutableIntStateOf(0) }
+    val savedConfig = remember(revision, externalRevision) { settings.miniServerConfig() }
+    var protocol by remember(savedConfig) { mutableStateOf(savedConfig.protocol) }
+    var host by remember(savedConfig) { mutableStateOf(savedConfig.host) }
+    var portText by remember(savedConfig) { mutableStateOf(savedConfig.port.toString()) }
+    var password by remember(savedConfig) { mutableStateOf(savedConfig.password) }
+    var customDomainsText by remember(savedConfig) { mutableStateOf(savedConfig.customDomains.joinToString("\n")) }
+    var forceHttps by remember(savedConfig) { mutableStateOf(savedConfig.forceHttps) }
+    var tlsKeyStoreBase64 by remember(savedConfig) { mutableStateOf(savedConfig.tlsKeyStoreBase64) }
+    var tlsKeyStorePassword by remember(savedConfig) { mutableStateOf(savedConfig.tlsKeyStorePassword) }
+    var tlsCertificateChain by remember(savedConfig) { mutableStateOf(savedConfig.tlsCertificateChain) }
+    var tlsPrivateKey by remember(savedConfig) { mutableStateOf(savedConfig.tlsPrivateKey) }
+    var spaFallback by remember(savedConfig) { mutableStateOf(savedConfig.spaFallback) }
+    var directoryListing by remember(savedConfig) { mutableStateOf(savedConfig.directoryListing) }
+    var mdnsEnabled by remember(savedConfig) { mutableStateOf(savedConfig.mdnsEnabled) }
+    var mdnsName by remember(savedConfig) { mutableStateOf(savedConfig.mdnsName) }
+    var statusText by remember { mutableStateOf("") }
+    var statusRevision by remember { mutableIntStateOf(0) }
+    val keyStoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tlsKeyStoreBase64 = Base64.encodeToString(input.readBytes(), Base64.NO_WRAP)
+                } ?: error("无法读取证书库文件")
+            }.fold(
+                { statusText = "已读取证书库文件" },
+                { statusText = "读取证书库失败：${it.message}" },
+            )
+        }
+    }
+    val certChainLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tlsCertificateChain = input.bufferedReader(Charsets.UTF_8).readText()
+                } ?: error("无法读取证书链文件")
+            }.fold(
+                { statusText = "已读取证书链文件" },
+                { statusText = "读取证书链失败：${it.message}" },
+            )
+        }
+    }
+    val privateKeyLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tlsPrivateKey = input.bufferedReader(Charsets.UTF_8).readText()
+                } ?: error("无法读取私钥文件")
+            }.fold(
+                { statusText = "已读取私钥文件" },
+                { statusText = "读取私钥失败：${it.message}" },
+            )
+        }
+    }
+    val status = remember(statusRevision, revision, externalRevision) { miniServerManager.status() }
+    val lanUrls = remember(statusRevision, revision, externalRevision) {
+        miniServerManager.statusJson().optJSONArray("lanUrls")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) add(array.optString(index))
+            }
+        }.orEmpty()
+    }
+    val customUrls = remember(statusRevision, revision, externalRevision) {
+        miniServerManager.statusJson().optJSONArray("customUrls")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) add(array.optString(index))
+            }
+        }.orEmpty()
+    }
+
+    fun currentConfig(enabled: Boolean = status.running): MiniServerConfig {
+        return MiniServerConfig(
+            protocol = if (protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTPS) AppSettings.MINI_SERVER_PROTOCOL_HTTPS else AppSettings.MINI_SERVER_PROTOCOL_HTTP,
+            host = host.trim().ifBlank { AppSettings.DEFAULT_MINI_SERVER_HOST },
+            port = portText.toIntOrNull()?.coerceIn(1, 65535) ?: AppSettings.DEFAULT_MINI_SERVER_PORT,
+            password = password,
+            customDomains = customDomainsText.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.distinct().toList(),
+            forceHttps = forceHttps,
+            tlsKeyStoreBase64 = tlsKeyStoreBase64,
+            tlsKeyStorePassword = tlsKeyStorePassword,
+            tlsCertificateChain = tlsCertificateChain,
+            tlsPrivateKey = tlsPrivateKey,
+            spaFallback = spaFallback,
+            directoryListing = directoryListing,
+            mdnsEnabled = mdnsEnabled,
+            mdnsName = mdnsName.ifBlank { AppSettings.DEFAULT_MINI_SERVER_MDNS_NAME },
+            enabled = enabled,
+        )
+    }
+
+    fun refresh(message: String) {
+        statusText = message
+        statusRevision++
+        revision++
+    }
+
+    KimiCardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Language, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("工作区微型服务器", style = MaterialTheme.typography.titleMedium)
+                Text("以当前工作目录作为静态站点根目录，适合调试 Vue/Vite 文档站或普通 HTML/CSS/JS。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(if (status.running) "运行中" else "已停止", color = if (status.running) MaterialTheme.colorScheme.primary else KimiMuted)
+        }
+        KimiDivider()
+        Text("本地地址：${status.url}", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        if (lanUrls.isNotEmpty()) {
+            Text("局域网地址：${lanUrls.joinToString("  ")}", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        if (customUrls.isNotEmpty()) {
+            Text("绑定域名：${customUrls.joinToString("  ")}", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        if (status.message.isNotBlank()) {
+            Text(status.message, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        }
+        if (statusText.isNotBlank()) {
+            Text(statusText, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedButton(
+            onClick = onOpenLogs,
+            shape = KimiPillShape,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Default.Article, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("查看终端日志")
+        }
+    }
+
+    KimiCardBox {
+        Text("监听配置", style = MaterialTheme.typography.titleMedium)
+        KimiDivider()
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { protocol = AppSettings.MINI_SERVER_PROTOCOL_HTTP },
+                shape = KimiPillShape,
+                modifier = Modifier.weight(1f),
+            ) { Text(if (protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTP) "HTTP ✓" else "HTTP") }
+            OutlinedButton(
+                onClick = { protocol = AppSettings.MINI_SERVER_PROTOCOL_HTTPS },
+                shape = KimiPillShape,
+                modifier = Modifier.weight(1f),
+            ) { Text(if (protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTPS) "HTTPS ✓" else "HTTPS") }
+        }
+        if (protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTPS) {
+            Text("HTTPS 使用内置自签名证书，浏览器会提示不受信任；公网或正式分享建议使用内网穿透/反向代理提供可信 TLS。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedTextField(value = host, onValueChange = { host = it }, modifier = Modifier.fillMaxWidth(), label = { Text("监听主机") }, singleLine = true)
+        Text("127.0.0.1 仅本机访问；0.0.0.0 可被局域网、内网穿透或公网映射访问。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(value = portText, onValueChange = { portText = it.filter(Char::isDigit).take(5) }, modifier = Modifier.fillMaxWidth(), label = { Text("端口") }, singleLine = true)
+        OutlinedTextField(value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(), label = { Text("访问密码，可空") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+        OutlinedTextField(
+            value = customDomainsText,
+            onValueChange = { customDomainsText = it },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp),
+            label = { Text("绑定域名，每行一个") },
+            placeholder = { Text("docs.example.com\nhttps://preview.example.com") },
+        )
+        WebDavSwitchRow("强制 HTTPS 连接", "HTTP 访问会返回 308 跳转到 HTTPS；适合反向代理或同端口 HTTPS 调试。", forceHttps) { forceHttps = it }
+        if (host.trim() == "0.0.0.0" || password.isBlank()) {
+            Text("安全提示：面向局域网或公网映射时建议设置密码；HTTP 明文会暴露访问内容和密码。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
+    KimiCardBox {
+        Text("HTTPS 证书", style = MaterialTheme.typography.titleMedium)
+        KimiDivider()
+        Text("未配置自定义证书时会使用内置自签名证书。证书库支持 PKCS12/JKS；PEM 私钥需为未加密 PKCS#8 格式。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { keyStoreLauncher.launch("*/*") },
+                shape = KimiPillShape,
+                modifier = Modifier.weight(1f),
+            ) { Text(if (tlsKeyStoreBase64.isBlank()) "上传证书库" else "替换证书库") }
+            OutlinedButton(
+                onClick = { tlsKeyStoreBase64 = "" },
+                shape = KimiPillShape,
+                enabled = tlsKeyStoreBase64.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) { Text("清除证书库") }
+        }
+        OutlinedTextField(
+            value = tlsKeyStorePassword,
+            onValueChange = { tlsKeyStorePassword = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("证书库/私钥密码，可空") },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { certChainLauncher.launch("*/*") }, shape = KimiPillShape, modifier = Modifier.weight(1f)) { Text("上传证书链") }
+            OutlinedButton(onClick = { privateKeyLauncher.launch("*/*") }, shape = KimiPillShape, modifier = Modifier.weight(1f)) { Text("上传私钥") }
+        }
+        OutlinedTextField(
+            value = tlsCertificateChain,
+            onValueChange = { tlsCertificateChain = it },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+            label = { Text("证书链 PEM，可粘贴") },
+            placeholder = { Text("-----BEGIN CERTIFICATE-----") },
+        )
+        OutlinedTextField(
+            value = tlsPrivateKey,
+            onValueChange = { tlsPrivateKey = it },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp),
+            label = { Text("私钥 PEM，可粘贴") },
+            placeholder = { Text("-----BEGIN PRIVATE KEY-----") },
+            visualTransformation = PasswordVisualTransformation(),
+        )
+    }
+
+    KimiCardBox {
+        Text("站点行为", style = MaterialTheme.typography.titleMedium)
+        KimiDivider()
+        WebDavSwitchRow("SPA 回退到 index.html", "适合 Vue Router / VitePress / 单页应用刷新路径。", spaFallback) { spaFallback = it }
+        WebDavSwitchRow("允许目录列表", "没有 index.html 时显示目录文件；公网环境不建议开启。", directoryListing) { directoryListing = it }
+        WebDavSwitchRow("发布 mDNS", "在局域网内尝试发布 _http._tcp 服务，便于支持 mDNS 的设备发现。", mdnsEnabled) { mdnsEnabled = it }
+        if (mdnsEnabled) {
+            OutlinedTextField(value = mdnsName, onValueChange = { mdnsName = it }, modifier = Modifier.fillMaxWidth(), label = { Text("mDNS 名称") }, singleLine = true)
+        }
+    }
+
+    KimiCardBox {
+        Text("操作", style = MaterialTheme.typography.titleMedium)
+        KimiDivider()
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = {
+                    settings.saveMiniServerConfig(currentConfig())
+                    refresh("微型服务器配置已保存")
+                },
+                shape = KimiPillShape,
+                modifier = Modifier.weight(1f),
+            ) { Text("保存") }
+            Button(
+                onClick = {
+                    statusText = "正在启动..."
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            runCatching { miniServerManager.start(currentConfig(enabled = true)) }
+                                .fold({ "已启动：${it.url}" }, { "启动失败：${it.message}" })
+                        }
+                        refresh(result)
+                    }
+                },
+                shape = KimiPillShape,
+                modifier = Modifier.weight(1f),
+            ) { Text(if (status.running) "重启" else "启动") }
+        }
+        OutlinedButton(
+            onClick = {
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching { miniServerManager.stop() }
+                            .fold({ "已停止" }, { "停止失败：${it.message}" })
+                    }
+                    refresh(result)
+                }
+            },
+            shape = KimiPillShape,
+            enabled = status.running,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("停止服务") }
+    }
+}
+
+@Composable
+internal fun MiniServerLogSettings(miniServerManager: MiniServerManager) {
+    var revision by remember { mutableIntStateOf(0) }
+    var levelFilter by rememberSaveable { mutableStateOf("") }
+    val payload = remember(revision, levelFilter) { miniServerManager.logsJson(200, levelFilter) }
+    val logs = remember(payload) {
+        payload.optJSONArray("logs")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) {
+                    array.optJSONObject(index)?.let { add(it) }
+                }
+            }
+        }.orEmpty()
+    }
+    val levels = listOf("" to "ALL", "info" to "INFO", "warn" to "WARN", "error" to "ERROR")
+    val terminalScroll = rememberScrollState()
+    val terminalHorizontalScroll = rememberScrollState()
+    val filterScroll = rememberScrollState()
+
+    LaunchedEffect(levelFilter) {
+        while (true) {
+            delay(1_000)
+            revision++
+        }
+    }
+
+    LaunchedEffect(logs.size, levelFilter) {
+        terminalScroll.animateScrollTo(terminalScroll.maxValue)
+    }
+
+    KimiCardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("终端日志", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "自动跟随连接、资源加载、认证失败、404 和页面 JavaScript 报错。",
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            IconButton(
+                onClick = {
+                    miniServerManager.clearLogs()
+                    revision++
+                },
+            ) {
+                Icon(Icons.Default.DeleteSweep, contentDescription = "清空日志", tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+        KimiDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(filterScroll),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${if (payload.optBoolean("running")) "RUNNING" else "STOPPED"} · ${payload.optString("workspace")} · ${payload.optInt("count")} lines",
+                color = KimiMuted,
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+            )
+            levels.forEach { (value, label) ->
+                TextButton(
+                    onClick = { levelFilter = value },
+                    shape = KimiPillShape,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = if (levelFilter == value) "[$label]" else label,
+                        maxLines = 1,
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 420.dp, max = 620.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFF101114))
+                .padding(12.dp),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .horizontalScroll(terminalHorizontalScroll)
+                    .verticalScroll(terminalScroll),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                if (logs.isEmpty()) {
+                    Text(
+                        "$ lyra mini-server logs --follow\n# 暂无日志。启动微型服务器并访问站点后，这里会自动显示请求记录和客户端错误。",
+                        color = Color(0xFF8BE9FD),
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                } else {
+                    logs.forEach { log ->
+                        MiniServerTerminalLine(log)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniServerTerminalLine(log: JSONObject) {
+    val level = log.optString("level", "info")
+    val color = when (level.lowercase(Locale.US)) {
+        "error" -> Color(0xFFFF6B6B)
+        "warn" -> Color(0xFFFFC857)
+        else -> Color(0xFF7BD88F)
+    }
+    val time = remember(log.optLong("timestamp")) {
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(log.optLong("timestamp")))
+    }
+    val status = log.optInt("status").takeIf { it > 0 }?.toString().orEmpty()
+    val method = log.optString("method")
+    val path = log.optString("path")
+    val durationMs = log.optLong("durationMs")
+    val message = log.optString("message")
+    Row(verticalAlignment = Alignment.Top) {
+        Text(
+            "$time ",
+            color = Color(0xFF8D99AE),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+        Text(
+            level.uppercase(Locale.US).padEnd(5),
+            color = color,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            buildString {
+                if (method.isNotBlank()) append(method).append(' ')
+                if (status.isNotBlank()) append(status).append(' ')
+                append(path.ifBlank { "-" })
+                append(" (").append(durationMs).append("ms)")
+                if (message.isNotBlank()) append(" - ").append(message)
+            },
+            color = Color(0xFFE8EAED),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Clip,
+        )
+    }
+}
+@Composable
 internal fun BackupSettings(
     settings: AppSettings,
     webDavClient: WebDavClient,
@@ -2783,6 +3354,9 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
     AgentToolInfo("global_rename_move", "全局移动/重命名", "移动工作区外共享存储内容，执行前需要用户确认。"),
     AgentToolInfo("download_file", "下载文件", "使用应用原生 HTTP/HTTPS 客户端下载到工作区或共享存储，支持请求头和 SHA-256 校验。"),
     AgentToolInfo("manage_scheduled_tasks", "定时任务", "列出或管理一次性、每日、每周和每月后台 AI 任务。"),
+    AgentToolInfo("get_mini_server_status", "微型服务器状态", "读取内置 HTTP 静态服务器状态和访问地址。"),
+    AgentToolInfo("read_mini_server_logs", "终端日志读取", "读取微型服务器连接、资源加载和页面错误日志，便于自动化调试。"),
+    AgentToolInfo("manage_mini_server", "微型服务器控制", "启动、停止、重启或修改工作区静态站点服务，执行前需要用户确认。"),
     AgentToolInfo("search_conversation_history", "搜索会话记录", "跨普通会话按关键词和时间段搜索历史记录，不读取思维链或工具日志。"),
     AgentToolInfo("read_conversation_history", "读取会话记录", "读取指定历史会话的用户消息和 AI 最终回复，用于总结与趋势分析。"),
     AgentToolInfo("search_files", "工作区搜索", "按文件名或路径片段搜索工作区。"),
