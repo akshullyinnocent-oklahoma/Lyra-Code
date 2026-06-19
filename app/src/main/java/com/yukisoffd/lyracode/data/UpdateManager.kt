@@ -72,6 +72,67 @@ class UpdateManager(private val context: Context) {
         }
     }
 
+    fun checkDailyForUpdateIfNeeded(): Result<AppUpdateInfo?> = runCatching {
+        val today = java.time.LocalDate.now().toString()
+        if (prefs.getString(KEY_LAST_DAILY_CHECK_DATE, "") == today) {
+            return@runCatching latestAvailableUpdate()
+        }
+        prefs.edit().putString(KEY_LAST_DAILY_CHECK_DATE, today).apply()
+        val info = checkForUpdate().getOrThrow()
+        if (info == null) {
+            clearLatestAvailableUpdate()
+        } else {
+            saveLatestAvailableUpdate(info)
+        }
+        info
+    }
+
+    fun latestAvailableUpdate(): AppUpdateInfo? {
+        val versionCode = prefs.getLong(KEY_LATEST_VERSION_CODE, 0L)
+        if (versionCode <= currentVersionCode()) {
+            clearLatestAvailableUpdate()
+            return null
+        }
+        return AppUpdateInfo(
+            versionName = prefs.getString(KEY_LATEST_VERSION_NAME, "").orEmpty(),
+            versionCode = versionCode,
+            apkUrl = prefs.getString(KEY_LATEST_APK_URL, "").orEmpty(),
+            apkSha256 = prefs.getString(KEY_LATEST_APK_SHA256, "").orEmpty(),
+            releaseNotes = prefs.getString(KEY_LATEST_RELEASE_NOTES, "").orEmpty(),
+            releaseNotesUrl = prefs.getString(KEY_LATEST_RELEASE_NOTES_URL, "").orEmpty(),
+            webUrl = prefs.getString(KEY_LATEST_WEB_URL, "").orEmpty(),
+            mandatory = prefs.getBoolean(KEY_LATEST_MANDATORY, false),
+        )
+    }
+
+    fun hasAvailableUpdate(): Boolean = latestAvailableUpdate() != null
+
+    fun saveLatestAvailableUpdate(info: AppUpdateInfo) {
+        prefs.edit()
+            .putLong(KEY_LATEST_VERSION_CODE, info.versionCode)
+            .putString(KEY_LATEST_VERSION_NAME, info.versionName)
+            .putString(KEY_LATEST_APK_URL, info.apkUrl)
+            .putString(KEY_LATEST_APK_SHA256, info.apkSha256)
+            .putString(KEY_LATEST_RELEASE_NOTES, info.releaseNotes)
+            .putString(KEY_LATEST_RELEASE_NOTES_URL, info.releaseNotesUrl)
+            .putString(KEY_LATEST_WEB_URL, info.webUrl)
+            .putBoolean(KEY_LATEST_MANDATORY, info.mandatory)
+            .apply()
+    }
+
+    fun clearLatestAvailableUpdate() {
+        prefs.edit()
+            .remove(KEY_LATEST_VERSION_CODE)
+            .remove(KEY_LATEST_VERSION_NAME)
+            .remove(KEY_LATEST_APK_URL)
+            .remove(KEY_LATEST_APK_SHA256)
+            .remove(KEY_LATEST_RELEASE_NOTES)
+            .remove(KEY_LATEST_RELEASE_NOTES_URL)
+            .remove(KEY_LATEST_WEB_URL)
+            .remove(KEY_LATEST_MANDATORY)
+            .apply()
+    }
+
     fun downloadApk(
         info: AppUpdateInfo,
         onProgress: (UpdateDownloadProgress) -> Unit,
@@ -285,5 +346,14 @@ class UpdateManager(private val context: Context) {
         const val KEY_PENDING_APK_SHA256 = "pending_apk_sha256"
         const val KEY_PENDING_VERSION_NAME = "pending_version_name"
         const val KEY_PENDING_VERSION_CODE = "pending_version_code"
+        const val KEY_LAST_DAILY_CHECK_DATE = "last_daily_check_date"
+        const val KEY_LATEST_VERSION_CODE = "latest_version_code"
+        const val KEY_LATEST_VERSION_NAME = "latest_version_name"
+        const val KEY_LATEST_APK_URL = "latest_apk_url"
+        const val KEY_LATEST_APK_SHA256 = "latest_apk_sha256"
+        const val KEY_LATEST_RELEASE_NOTES = "latest_release_notes"
+        const val KEY_LATEST_RELEASE_NOTES_URL = "latest_release_notes_url"
+        const val KEY_LATEST_WEB_URL = "latest_web_url"
+        const val KEY_LATEST_MANDATORY = "latest_mandatory"
     }
 }

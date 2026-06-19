@@ -174,6 +174,8 @@ import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
+import com.yukisoffd.lyracode.filetransfer.FileTransferClient
+import com.yukisoffd.lyracode.mcp.LocalMcpServerManager
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
@@ -207,6 +209,7 @@ import android.graphics.Canvas as AndroidCanvas
 class MainActivity : ComponentActivity() {
     private var controller: ChatController? = null
     private var miniServerManager: MiniServerManager? = null
+    private var localMcpServerManager: LocalMcpServerManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -231,10 +234,15 @@ class MainActivity : ComponentActivity() {
         val sshExecutor = SshExecutor(settings)
         val systemCommandExecutor = SystemCommandExecutor(this, settings)
         val webDavClient = WebDavClient()
+        val fileTransferClient = FileTransferClient()
         val backupManager = BackupManager(this, settings, conversationStore)
         val miniServerManager = MiniServerManager(this, settings, workspaceManager)
         this.miniServerManager = miniServerManager
-        val agent = OpenAiAgent(this, settings, conversationStore, nativeFileManager, globalFileManager, termuxExecutor, workspaceManager, webAgent, mcpClientManager, sshExecutor, systemCommandExecutor, webDavClient, backupManager, miniServerManager, downloadTaskManager, scheduledTaskManager, responseCache)
+        val localMcpServerManager = LocalMcpServerManager(settings)
+        this.localMcpServerManager = localMcpServerManager
+        val agent = OpenAiAgent(this, settings, conversationStore, nativeFileManager, globalFileManager, termuxExecutor, workspaceManager, webAgent, mcpClientManager, sshExecutor, systemCommandExecutor, webDavClient, fileTransferClient, backupManager, miniServerManager, downloadTaskManager, scheduledTaskManager, responseCache)
+        localMcpServerManager.attachAgent(agent)
+        localMcpServerManager.syncWithSettings()
         val chatController = ChatController(settings, conversationStore, uploadedFileManager, agent)
         controller = chatController
 
@@ -276,8 +284,10 @@ class MainActivity : ComponentActivity() {
                     sshExecutor = sshExecutor,
                     systemCommandExecutor = systemCommandExecutor,
                     webDavClient = webDavClient,
+                    fileTransferClient = fileTransferClient,
                     backupManager = backupManager,
                     miniServerManager = miniServerManager,
+                    localMcpServerManager = localMcpServerManager,
                     downloadTaskManager = downloadTaskManager,
                     scheduledTaskManager = scheduledTaskManager,
                     controller = chatController,
@@ -315,6 +325,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         controller?.close()
         miniServerManager?.close()
+        localMcpServerManager?.close()
         super.onDestroy()
     }
 

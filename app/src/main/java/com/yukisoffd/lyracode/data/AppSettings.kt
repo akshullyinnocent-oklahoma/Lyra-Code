@@ -96,6 +96,13 @@ data class McpServerConfig(
     val tools: List<McpToolDefinition>,
 )
 
+data class LocalMcpServerConfig(
+    val host: String,
+    val port: Int,
+    val authKey: String,
+    val enabled: Boolean,
+)
+
 data class SshServerConfig(
     val id: String,
     val name: String,
@@ -130,6 +137,31 @@ data class MiniServerConfig(
     val mdnsName: String,
     val enabled: Boolean,
 )
+
+data class FileTransferServerConfig(
+    val id: String,
+    val name: String,
+    val protocol: String,
+    val host: String,
+    val port: Int,
+    val username: String,
+    val password: String,
+    val usePrivateKey: Boolean,
+    val privateKey: String,
+    val passphrase: String,
+    val initialPath: String,
+    val note: String,
+    val encoding: String,
+    val passiveMode: Boolean,
+    val explicitFtps: Boolean,
+    val multiThread: Boolean,
+    val syncPermissions: Boolean,
+    val hideAddressInDrawer: Boolean,
+    val enabled: Boolean,
+) {
+    val stableId: String
+        get() = "${protocol.trim().lowercase()}://${username.trim()}@${host.trim()}:${port.coerceIn(1, 65535)}"
+}
 
 class AppSettings(context: Context) {
     private val appContext = context.applicationContext
@@ -934,6 +966,18 @@ class AppSettings(context: Context) {
         return enabledMcpTools().firstOrNull { (server, tool) -> mcpToolFunctionName(server, tool) == functionName }
     }
 
+    fun localMcpServerConfig(): LocalMcpServerConfig {
+        val raw = securePrefs.getString(KEY_LOCAL_MCP_SERVER, null).orEmpty()
+        if (raw.isBlank()) return defaultLocalMcpServerConfig()
+        return runCatching { parseLocalMcpServerConfig(JSONObject(raw)) }.getOrDefault(defaultLocalMcpServerConfig())
+    }
+
+    fun saveLocalMcpServerConfig(config: LocalMcpServerConfig) {
+        securePrefs.edit()
+            .putString(KEY_LOCAL_MCP_SERVER, localMcpServerConfigJson(config, includeSecrets = true).toString())
+            .apply()
+    }
+
     fun sshServers(): List<SshServerConfig> {
         val raw = securePrefs.getString(KEY_SSH_SERVERS, null).orEmpty()
         if (raw.isBlank()) return emptyList()
@@ -1039,6 +1083,40 @@ class AppSettings(context: Context) {
             .firstOrNull { it.id == clean || it.name == clean || it.url == clean || it.stableId == clean }
     }
 
+    fun fileTransferServers(): List<FileTransferServerConfig> {
+        val raw = securePrefs.getString(KEY_FILE_TRANSFER_SERVERS, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching { parseFileTransferServers(JSONArray(raw)) }.getOrDefault(emptyList())
+    }
+
+    fun saveFileTransferServers(servers: List<FileTransferServerConfig>) {
+        val array = JSONArray()
+        servers.forEach { array.put(fileTransferServerJson(it, includeSecrets = true)) }
+        securePrefs.edit().putString(KEY_FILE_TRANSFER_SERVERS, array.toString()).apply()
+    }
+
+    fun upsertFileTransferServer(server: FileTransferServerConfig) {
+        val servers = fileTransferServers().toMutableList()
+        val index = servers.indexOfFirst { it.id == server.id || it.stableId == server.stableId }
+        if (index >= 0) servers[index] = server else servers += server
+        saveFileTransferServers(servers)
+    }
+
+    fun deleteFileTransferServer(id: String) {
+        saveFileTransferServers(fileTransferServers().filterNot { it.id == id || it.name == id || it.stableId == id })
+    }
+
+    fun setFileTransferServerEnabled(id: String, enabled: Boolean) {
+        saveFileTransferServers(fileTransferServers().map { if (it.id == id || it.name == id || it.stableId == id) it.copy(enabled = enabled) else it })
+    }
+
+    fun resolveFileTransferServer(identifier: String): FileTransferServerConfig? {
+        val clean = identifier.trim()
+        return fileTransferServers()
+            .filter { it.enabled }
+            .firstOrNull { it.id == clean || it.name == clean || it.stableId == clean || it.host == clean }
+    }
+
     fun miniServerConfig(): MiniServerConfig {
         val raw = securePrefs.getString(KEY_MINI_SERVER_CONFIG, null).orEmpty()
         if (raw.isBlank()) return defaultMiniServerConfig()
@@ -1137,7 +1215,11 @@ class AppSettings(context: Context) {
             .put("webDavServers", JSONArray().also { array ->
                 webDavServers().forEach { array.put(webDavServerJson(it, includeSecrets)) }
             })
+            .put("fileTransferServers", JSONArray().also { array ->
+                fileTransferServers().forEach { array.put(fileTransferServerJson(it, includeSecrets)) }
+            })
             .put("miniServer", miniServerConfigJson(miniServerConfig(), includeSecrets))
+            .put("localMcpServer", localMcpServerConfigJson(localMcpServerConfig(), includeSecrets))
     }
 
     fun importSettingsJson(root: JSONObject, mode: String): String {
@@ -1204,6 +1286,11 @@ class AppSettings(context: Context) {
             saveWebDavServers(if (supplement) mergeWebDavServers(webDavServers(), imported) else imported)
             messages += "WebDAV ${imported.size} 项"
         }
+        root.optJSONArray("fileTransferServers")?.let { array ->
+            val imported = parseFileTransferServers(array)
+            saveFileTransferServers(if (supplement) mergeFileTransferServers(fileTransferServers(), imported) else imported)
+            messages += "文件传输 ${imported.size} 项"
+        }
         root.optJSONObject("miniServer")?.let { item ->
             val current = miniServerConfig()
             val imported = parseMiniServerConfig(item)
@@ -1221,6 +1308,14 @@ class AppSettings(context: Context) {
                 },
             )
             messages += "微型服务器配置"
+        }
+        root.optJSONObject("localMcpServer")?.let { item ->
+            val current = localMcpServerConfig()
+            val imported = parseLocalMcpServerConfig(item)
+            saveLocalMcpServerConfig(
+                if (supplement) imported.copy(authKey = imported.authKey.ifBlank { current.authKey }) else imported,
+            )
+            messages += "本机 MCP 服务端配置"
         }
         return messages.ifEmpty { listOf("没有可导入的兼容配置") }.joinToString("；")
     }
@@ -1253,6 +1348,29 @@ class AppSettings(context: Context) {
             .put("enabled", server.enabled)
     }
 
+    private fun fileTransferServerJson(server: FileTransferServerConfig, includeSecrets: Boolean): JSONObject {
+        return JSONObject()
+            .put("id", server.id)
+            .put("name", server.name)
+            .put("protocol", server.protocol)
+            .put("host", server.host)
+            .put("port", server.port)
+            .put("username", server.username)
+            .put("password", if (includeSecrets) server.password else "")
+            .put("usePrivateKey", server.usePrivateKey)
+            .put("privateKey", if (includeSecrets) server.privateKey else "")
+            .put("passphrase", if (includeSecrets) server.passphrase else "")
+            .put("initialPath", server.initialPath)
+            .put("note", server.note)
+            .put("encoding", server.encoding)
+            .put("passiveMode", server.passiveMode)
+            .put("explicitFtps", server.explicitFtps)
+            .put("multiThread", server.multiThread)
+            .put("syncPermissions", server.syncPermissions)
+            .put("hideAddressInDrawer", server.hideAddressInDrawer)
+            .put("enabled", server.enabled)
+    }
+
     private fun defaultMiniServerConfig(): MiniServerConfig = MiniServerConfig(
         protocol = MINI_SERVER_PROTOCOL_HTTP,
         host = DEFAULT_MINI_SERVER_HOST,
@@ -1270,6 +1388,30 @@ class AppSettings(context: Context) {
         mdnsName = DEFAULT_MINI_SERVER_MDNS_NAME,
         enabled = false,
     )
+
+    private fun defaultLocalMcpServerConfig(): LocalMcpServerConfig = LocalMcpServerConfig(
+        host = DEFAULT_LOCAL_MCP_SERVER_HOST,
+        port = DEFAULT_LOCAL_MCP_SERVER_PORT,
+        authKey = "",
+        enabled = false,
+    )
+
+    private fun localMcpServerConfigJson(config: LocalMcpServerConfig, includeSecrets: Boolean): JSONObject {
+        return JSONObject()
+            .put("host", config.host.ifBlank { DEFAULT_LOCAL_MCP_SERVER_HOST })
+            .put("port", config.port.coerceIn(1, 65535))
+            .put("authKey", if (includeSecrets) config.authKey else "")
+            .put("enabled", config.enabled)
+    }
+
+    private fun parseLocalMcpServerConfig(item: JSONObject): LocalMcpServerConfig {
+        return LocalMcpServerConfig(
+            host = item.optString("host").ifBlank { DEFAULT_LOCAL_MCP_SERVER_HOST },
+            port = item.optInt("port", DEFAULT_LOCAL_MCP_SERVER_PORT).coerceIn(1, 65535),
+            authKey = item.optString("authKey"),
+            enabled = item.optBoolean("enabled", false),
+        )
+    }
 
     private fun miniServerConfigJson(config: MiniServerConfig, includeSecrets: Boolean): JSONObject {
         return JSONObject()
@@ -1339,12 +1481,20 @@ class AppSettings(context: Context) {
     private fun normalizeWebSearchBlockedHost(raw: String): String? {
         val clean = raw.trim().trimEnd('/').trim()
         if (clean.isBlank() || clean.startsWith("#")) return null
-        val withScheme = if (clean.contains("://")) clean else "https://$clean"
-        val host = runCatching { Uri.parse(withScheme).host.orEmpty() }.getOrDefault("")
+        val withoutScheme = clean.substringAfter("://", clean)
+        val authority = withoutScheme
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore('#')
+            .substringAfterLast('@')
+        val hostPart = authority
+            .let { if (it.startsWith("[")) it.substringBefore(']') + "]" else it.substringBefore(':') }
             .lowercase()
-            .removePrefix("www.")
             .trim('.')
-        return host.takeIf { it.isNotBlank() }
+        val host = hostPart.removePrefix("*.").trim('.')
+        if (host.isBlank()) return null
+        if (hostPart.startsWith("*.") && !host.contains('.')) return null
+        return if (hostPart.startsWith("*.")) "*.$host" else host
     }
 
     private fun parseProfiles(array: JSONArray): List<ApiProfile> = buildList {
@@ -1441,6 +1591,36 @@ class AppSettings(context: Context) {
             )
         }
     }.filter { it.url.isNotBlank() }
+
+    private fun parseFileTransferServers(array: JSONArray): List<FileTransferServerConfig> = buildList {
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val protocol = normalizeFileTransferProtocol(item.optString("protocol"))
+            add(
+                FileTransferServerConfig(
+                    id = item.optString("id").ifBlank { newId() },
+                    name = item.optString("name").ifBlank { protocol.uppercase() },
+                    protocol = protocol,
+                    host = item.optString("host"),
+                    port = item.optInt("port", defaultFileTransferPort(protocol)).coerceIn(1, 65535),
+                    username = item.optString("username").ifBlank { if (protocol == FILE_TRANSFER_SFTP) "" else "anonymous" },
+                    password = item.optString("password"),
+                    usePrivateKey = item.optBoolean("usePrivateKey", false),
+                    privateKey = item.optString("privateKey"),
+                    passphrase = item.optString("passphrase"),
+                    initialPath = item.optString("initialPath").ifBlank { "/" },
+                    note = item.optString("note"),
+                    encoding = item.optString("encoding").ifBlank { "UTF-8" },
+                    passiveMode = item.optBoolean("passiveMode", true),
+                    explicitFtps = item.optBoolean("explicitFtps", true),
+                    multiThread = item.optBoolean("multiThread", true),
+                    syncPermissions = item.optBoolean("syncPermissions", false),
+                    hideAddressInDrawer = item.optBoolean("hideAddressInDrawer", false),
+                    enabled = item.optBoolean("enabled", true),
+                ),
+            )
+        }
+    }.filter { it.host.isNotBlank() && (it.protocol != FILE_TRANSFER_SFTP || it.username.isNotBlank()) }
 
     private fun parseSystemPromptConfigs(array: JSONArray): List<SystemPromptPreset> = buildList {
         for (index in 0 until array.length()) {
@@ -1541,6 +1721,25 @@ class AppSettings(context: Context) {
         return result
     }
 
+    private fun mergeFileTransferServers(existing: List<FileTransferServerConfig>, imported: List<FileTransferServerConfig>): List<FileTransferServerConfig> {
+        val result = existing.toMutableList()
+        imported.forEach { incoming ->
+            val index = result.indexOfFirst { it.id == incoming.id || it.stableId == incoming.stableId }
+            if (index >= 0) {
+                val current = result[index]
+                result[index] = incoming.copy(
+                    id = current.id,
+                    password = incoming.password.ifBlank { current.password },
+                    privateKey = incoming.privateKey.ifBlank { current.privateKey },
+                    passphrase = incoming.passphrase.ifBlank { current.passphrase },
+                )
+            } else {
+                result += incoming
+            }
+        }
+        return result
+    }
+
     private fun sameEndpointProfile(first: ApiProfile, second: ApiProfile): Boolean {
         return first.name == second.name &&
             first.apiFormat == second.apiFormat &&
@@ -1616,8 +1815,10 @@ class AppSettings(context: Context) {
         private const val KEY_REASONING_DEPTH = "reasoning_depth"
         private const val KEY_WEB_SEARCH_BLACKLIST = "web_search_blacklist"
         private const val KEY_MCP_SERVERS = "mcp_servers"
+        private const val KEY_LOCAL_MCP_SERVER = "local_mcp_server"
         private const val KEY_SSH_SERVERS = "ssh_servers"
         private const val KEY_WEBDAV_SERVERS = "webdav_servers"
+        private const val KEY_FILE_TRANSFER_SERVERS = "file_transfer_servers"
         private const val KEY_IMMERSIVE_ROLEPLAY_ENABLED = "immersive_roleplay_enabled"
         private const val KEY_SELECTED_ROLEPLAY_ID = "selected_roleplay_id"
         private const val KEY_ROLEPLAY_AFFECTION_PREFIX = "roleplay_affection_"
@@ -1666,8 +1867,25 @@ class AppSettings(context: Context) {
         val reasoningDepthValues = listOf(REASONING_AUTO, REASONING_LOW, REASONING_MEDIUM, REASONING_HIGH, REASONING_ULTRA)
         const val MCP_TRANSPORT_STREAMABLE_HTTP = "streamable_http"
         const val MCP_TRANSPORT_SSE = "sse"
+        const val DEFAULT_LOCAL_MCP_SERVER_HOST = "0.0.0.0"
+        const val DEFAULT_LOCAL_MCP_SERVER_PORT = 8791
         const val SSH_AUTH_PASSWORD = "password"
         const val SSH_AUTH_KEY = "key"
+        const val FILE_TRANSFER_FTP = "ftp"
+        const val FILE_TRANSFER_FTPS = "ftps"
+        const val FILE_TRANSFER_SFTP = "sftp"
+
+        fun normalizeFileTransferProtocol(value: String): String = when (value.trim().lowercase()) {
+            FILE_TRANSFER_FTPS -> FILE_TRANSFER_FTPS
+            FILE_TRANSFER_SFTP -> FILE_TRANSFER_SFTP
+            else -> FILE_TRANSFER_FTP
+        }
+
+        fun defaultFileTransferPort(protocol: String): Int = when (normalizeFileTransferProtocol(protocol)) {
+            FILE_TRANSFER_SFTP -> 22
+            FILE_TRANSFER_FTPS -> 21
+            else -> 21
+        }
 
         val defaultSystemPromptPresets = listOf(
             SystemPromptPreset(

@@ -15,12 +15,14 @@ import com.yukisoffd.lyracode.data.BackupManager
 import com.yukisoffd.lyracode.data.BackupOptions
 import com.yukisoffd.lyracode.data.ChatMessage
 import com.yukisoffd.lyracode.data.ConversationStore
+import com.yukisoffd.lyracode.data.FileTransferServerConfig
 import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.MiniServerConfig
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
+import com.yukisoffd.lyracode.filetransfer.FileTransferClient
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
@@ -70,6 +72,7 @@ data class ChatRecord(
     val thinking: String = "",
     val profileId: String = "",
     val model: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 data class ChatUpdate(
@@ -158,6 +161,7 @@ class OpenAiAgent(
     private val sshExecutor: SshExecutor,
     private val systemCommandExecutor: SystemCommandExecutor,
     private val webDavClient: WebDavClient,
+    private val fileTransferClient: FileTransferClient,
     private val backupManager: BackupManager,
     private val miniServerManager: MiniServerManager,
     private val downloadTaskManager: DownloadTaskManager,
@@ -168,6 +172,22 @@ class OpenAiAgent(
     var todoSetHandler: suspend (Long, List<TodoItem>) -> String = { _, _ -> "TODO 列表已记录" }
     var todoUpdateHandler: suspend (Long, String, String, String) -> String = { _, _, _, _ -> "TODO 状态已更新" }
     var configChangedHandler: suspend () -> Unit = {}
+
+    fun localMcpToolDefinitions(): JSONArray = toolDefinitions()
+
+    suspend fun executeLocalMcpTool(name: String, arguments: JSONObject): String {
+        val rawArguments = arguments.toString()
+        return executeTool(
+            conversationId = LOCAL_MCP_CONVERSATION_ID,
+            call = ToolCall(
+                id = "local_mcp_${System.currentTimeMillis()}_${name.take(32)}",
+                name = name,
+                arguments = arguments,
+                rawArguments = rawArguments,
+            ),
+            skipApproval = true,
+        )
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -1144,7 +1164,7 @@ class OpenAiAgent(
         }
     }
 
-    private suspend fun executeTool(conversationId: Long, call: ToolCall): String {
+    private suspend fun executeTool(conversationId: Long, call: ToolCall, skipApproval: Boolean = false): String {
         val args = call.arguments
         val startedAt = System.currentTimeMillis()
         Log.d(
@@ -1158,7 +1178,7 @@ class OpenAiAgent(
             return output
         }
         return runCatching {
-            val approval = approvalFor(conversationId, call)
+            val approval = if (skipApproval) null else approvalFor(conversationId, call)
             if (approval != null) {
                 val decision = approvalHandler(approval)
                 if (!decision.approved) {
@@ -1282,6 +1302,39 @@ class OpenAiAgent(
                     val bytes = nativeFileManager.readBytes(args.getString("local_path")).getOrThrow()
                     webDavClient.upload(server, args.getString("remote_path"), bytes)
                     ToolExecution("已上传到 WebDAV: ${server.name}:${args.getString("remote_path")}，大小 ${bytes.size} bytes。")
+                }
+                "list_file_transfer_servers" -> ToolExecution(fileTransferClient.serversJson(settings.fileTransferServers().filter { it.enabled }))
+                "file_transfer_list" -> {
+                    val server = settings.resolveFileTransferServer(args.getString("server_id"))
+                        ?: error("文件传输服务器不存在或已禁用: ${args.optString("server_id")}。请先调用 list_file_transfer_servers 获取可用 id。")
+                    val path = args.optString("path").ifBlank { server.initialPath.ifBlank { "/" } }
+                    val files = fileTransferClient.list(server, path)
+                    ToolExecution(fileTransferFilesJson(server, files).put("path", path).toString())
+                }
+                "file_transfer_search" -> {
+                    val server = settings.resolveFileTransferServer(args.getString("server_id"))
+                        ?: error("文件传输服务器不存在或已禁用: ${args.optString("server_id")}。请先调用 list_file_transfer_servers 获取可用 id。")
+                    val files = fileTransferClient.search(
+                        server = server,
+                        query = args.getString("query"),
+                        basePath = args.optString("path").ifBlank { server.initialPath.ifBlank { "/" } },
+                        limit = args.optInt("limit", 80).coerceIn(1, 200),
+                    )
+                    ToolExecution(fileTransferFilesJson(server, files).toString())
+                }
+                "file_transfer_download_to_workspace" -> {
+                    val server = settings.resolveFileTransferServer(args.getString("server_id"))
+                        ?: error("文件传输服务器不存在或已禁用: ${args.optString("server_id")}")
+                    val bytes = fileTransferClient.download(server, args.getString("remote_path"))
+                    val message = nativeFileManager.writeBytes(args.getString("local_path"), bytes).getOrThrow()
+                    ToolExecution("$message\n已从 ${server.protocol.uppercase(Locale.US)} 下载 ${bytes.size} bytes。")
+                }
+                "file_transfer_upload_from_workspace" -> {
+                    val server = settings.resolveFileTransferServer(args.getString("server_id"))
+                        ?: error("文件传输服务器不存在或已禁用: ${args.optString("server_id")}")
+                    val bytes = nativeFileManager.readBytes(args.getString("local_path")).getOrThrow()
+                    fileTransferClient.upload(server, args.getString("remote_path"), bytes)
+                    ToolExecution("已上传到 ${server.protocol.uppercase(Locale.US)}: ${server.name}:${args.getString("remote_path")}，大小 ${bytes.size} bytes。")
                 }
                 "export_backup" -> {
                     val options = parseBackupOptions(args)
@@ -1548,7 +1601,7 @@ class OpenAiAgent(
     private suspend fun manageAppConfig(args: JSONObject): String {
         val target = args.optString("target").trim().lowercase(Locale.US).replace("-", "_")
         val action = args.optString("action").trim().lowercase(Locale.US).replace("-", "_")
-        require(target.isNotBlank()) { "target 不能为空，可用 all、mcp_server、ssh_server、webdav_server、skill、agent_tool" }
+        require(target.isNotBlank()) { "target 不能为空，可用 all、mcp_server、ssh_server、webdav_server、file_transfer_server、skill、agent_tool" }
         require(action.isNotBlank()) { "action 不能为空，可用 list、add、update、enable、disable、delete" }
         val result = when (target) {
             "all", "config", "configs", "inventory" -> {
@@ -1558,6 +1611,7 @@ class OpenAiAgent(
             "mcp", "mcp_server", "mcp_servers" -> manageMcpConfig(action, args)
             "ssh", "ssh_server", "ssh_servers" -> manageSshConfig(action, args)
             "webdav", "webdav_server", "webdav_servers" -> manageWebDavConfig(action, args)
+            "file_transfer", "file_transfer_server", "file_transfer_servers", "ftp", "ftps", "sftp" -> manageFileTransferConfig(target, action, args)
             "skill", "skills" -> manageSkillConfig(action, args)
             "agent", "agent_tool", "tool", "tools" -> manageAgentToolConfig(action, args)
             else -> error("未知配置目标: $target")
@@ -1728,6 +1782,76 @@ class OpenAiAgent(
         ).toString()
     }
 
+    private fun manageFileTransferConfig(target: String, action: String, args: JSONObject): String {
+        if (action == "list") return configResult("file_transfer_servers", fileTransferServersJson()).toString()
+        val protocolHint = when (target) {
+            "ftp", "ftps", "sftp" -> target
+            else -> ""
+        }
+        val existing = resolveFileTransferServerForConfig(
+            args.optString("id")
+                .ifBlank { args.optString("host") }
+                .ifBlank { args.optString("name") },
+        )
+        when (action) {
+            "delete", "remove" -> {
+                val targetServer = existing ?: error("未找到要删除的文件传输服务器")
+                settings.deleteFileTransferServer(targetServer.id)
+                return configResult("file_transfer_server_deleted", JSONObject().put("id", targetServer.id).put("name", targetServer.name)).toString()
+            }
+            "enable", "disable" -> {
+                val targetServer = existing ?: error("未找到要${if (action == "enable") "启用" else "禁用"}的文件传输服务器")
+                settings.setFileTransferServerEnabled(targetServer.id, action == "enable")
+                return configResult("file_transfer_server_${action}d", fileTransferServerJson(targetServer.copy(enabled = action == "enable"))).toString()
+            }
+        }
+        require(action in setOf("add", "create", "update", "modify", "upsert")) { "文件传输服务器不支持 action=$action" }
+        val protocol = AppSettings.normalizeFileTransferProtocol(
+            args.optString("protocol")
+                .ifBlank { protocolHint }
+                .ifBlank { existing?.protocol.orEmpty() }
+                .ifBlank { AppSettings.FILE_TRANSFER_SFTP },
+        )
+        val host = args.optString("host").ifBlank { args.optString("url") }.ifBlank { existing?.host.orEmpty() }.trim()
+        require(host.isNotBlank()) { "文件传输服务器 host 不能为空" }
+        val username = args.optString("username").ifBlank { args.optString("user") }.ifBlank { existing?.username.orEmpty() }.trim()
+        if (protocol == AppSettings.FILE_TRANSFER_SFTP) require(username.isNotBlank()) { "SFTP 需要 username；如果用户未提供，请先向用户索取。" }
+        val usePrivateKey = if (args.has("use_private_key")) args.optBoolean("use_private_key") else existing?.usePrivateKey ?: false
+        val server = FileTransferServerConfig(
+            id = existing?.id ?: args.optString("id").ifBlank { AppSettings.newId() },
+            name = args.optString("name").ifBlank { existing?.name.orEmpty() }.ifBlank { "${protocol.uppercase(Locale.US)} $host" },
+            protocol = protocol,
+            host = host,
+            port = args.optInt("port", existing?.port ?: AppSettings.defaultFileTransferPort(protocol)).coerceIn(1, 65535),
+            username = username.ifBlank { if (protocol == AppSettings.FILE_TRANSFER_SFTP) "" else "anonymous" },
+            password = args.optString("password").ifBlank { existing?.password.orEmpty() },
+            usePrivateKey = usePrivateKey,
+            privateKey = args.optString("private_key").ifBlank { existing?.privateKey.orEmpty() },
+            passphrase = args.optString("passphrase").ifBlank { existing?.passphrase.orEmpty() },
+            initialPath = args.optString("initial_path").ifBlank { args.optString("path") }.ifBlank { existing?.initialPath.orEmpty() }.ifBlank { "/" },
+            note = args.optString("note").ifBlank { existing?.note.orEmpty() },
+            encoding = args.optString("encoding").ifBlank { existing?.encoding.orEmpty() }.ifBlank { "UTF-8" },
+            passiveMode = if (args.has("passive_mode")) args.optBoolean("passive_mode") else existing?.passiveMode ?: true,
+            explicitFtps = if (args.has("explicit_ftps")) args.optBoolean("explicit_ftps") else existing?.explicitFtps ?: true,
+            multiThread = if (args.has("multi_thread")) args.optBoolean("multi_thread") else existing?.multiThread ?: true,
+            syncPermissions = if (args.has("sync_permissions")) args.optBoolean("sync_permissions") else existing?.syncPermissions ?: false,
+            hideAddressInDrawer = if (args.has("hide_address")) args.optBoolean("hide_address") else existing?.hideAddressInDrawer ?: false,
+            enabled = if (args.has("enabled")) args.optBoolean("enabled") else existing?.enabled ?: true,
+        )
+        require(!server.usePrivateKey || server.privateKey.isNotBlank()) { "密钥登录需要 private_key；如果用户未提供，请先向用户索取。" }
+        settings.upsertFileTransferServer(server)
+        val test = if (server.enabled) fileTransferClient.test(server) else Result.success(emptyList())
+        return configResult(
+            "file_transfer_server_saved",
+            JSONObject()
+                .put("server", fileTransferServerJson(server))
+                .put("test_ok", test.isSuccess)
+                .put("message", test.exceptionOrNull()?.message.orEmpty().ifBlank {
+                    if (server.protocol == AppSettings.FILE_TRANSFER_FTP) "已保存。注意 FTP 明文连接不安全，建议优先使用 SFTP 或 FTPS。" else "文件传输服务器已保存并测试通过。"
+                }),
+        ).toString()
+    }
+
     private fun manageSkillConfig(action: String, args: JSONObject): String {
         if (action == "list") return configResult("skills", skillsJson()).toString()
         val existing = resolveSkillForConfig(args.optString("id").ifBlank { args.optString("name") })
@@ -1800,9 +1924,10 @@ class OpenAiAgent(
                 .put("mcp_servers", mcpServersJson())
                 .put("ssh_servers", sshServersJson())
                 .put("webdav_servers", webDavServersJson())
+                .put("file_transfer_servers", fileTransferServersJson())
                 .put("skills", skillsJson())
                 .put("disabled_summary", disabledConfigSummaryJson())
-                .put("instruction", "启用前先从 disabled_summary 或对应列表里确认 id/name/tool_name。Agent 工具用 target=agent_tool；MCP/SSH/WebDAV/Skill 配置用对应 target。"),
+                .put("instruction", "启用前先从 disabled_summary 或对应列表里确认 id/name/tool_name。Agent 工具用 target=agent_tool；MCP/SSH/WebDAV/文件传输/Skill 配置用对应 target。"),
         )
     }
 
@@ -1839,6 +1964,11 @@ class OpenAiAgent(
             })
             .put("webdav_servers", JSONArray().also { array ->
                 settings.webDavServers().filterNot { it.enabled }.forEach { array.put(JSONObject().put("id", it.id).put("name", it.name).put("url", it.url)) }
+            })
+            .put("file_transfer_servers", JSONArray().also { array ->
+                settings.fileTransferServers().filterNot { it.enabled }.forEach {
+                    array.put(JSONObject().put("id", it.id).put("name", it.name).put("protocol", it.protocol).put("host", it.host))
+                }
             })
             .put("skills", JSONArray().also { array ->
                 settings.installedSkills().filterNot { it.enabled }.forEach { array.put(JSONObject().put("id", it.id).put("name", it.name).put("description", it.description)) }
@@ -2080,6 +2210,59 @@ class OpenAiAgent(
             }
         })
 
+    private fun fileTransferServersJson(): JSONArray = JSONArray().also { array ->
+        settings.fileTransferServers().forEach { array.put(fileTransferServerJson(it)) }
+    }
+
+    private fun resolveFileTransferServerForConfig(key: String): FileTransferServerConfig? {
+        val clean = key.trim()
+        if (clean.isBlank()) return null
+        return settings.fileTransferServers().firstOrNull {
+            it.id == clean ||
+                it.name.equals(clean, ignoreCase = true) ||
+                it.host.equals(clean, ignoreCase = true) ||
+                it.stableId.equals(clean, ignoreCase = true)
+        }
+    }
+
+    private fun fileTransferServerJson(server: FileTransferServerConfig): JSONObject = JSONObject()
+        .put("id", server.id)
+        .put("stable_id", server.stableId)
+        .put("name", server.name)
+        .put("protocol", server.protocol)
+        .put("host", server.host)
+        .put("port", server.port)
+        .put("username", server.username)
+        .put("initial_path", server.initialPath)
+        .put("note", server.note)
+        .put("encoding", server.encoding)
+        .put("enabled", server.enabled)
+        .put("use_private_key", server.usePrivateKey)
+        .put("passive_mode", server.passiveMode)
+        .put("explicit_ftps", server.explicitFtps)
+        .put("multi_thread", server.multiThread)
+        .put("sync_permissions", server.syncPermissions)
+        .put("hide_address", server.hideAddressInDrawer)
+        .put("has_password", server.password.isNotBlank())
+        .put("has_private_key", server.privateKey.isNotBlank())
+
+    private fun fileTransferFilesJson(server: FileTransferServerConfig, files: List<com.yukisoffd.lyracode.filetransfer.FileTransferFile>): JSONObject = JSONObject()
+        .put("schema", "lyra_file_transfer_files_v1")
+        .put("server_id", server.id)
+        .put("server_name", server.name)
+        .put("protocol", server.protocol)
+        .put("files", JSONArray().also { array ->
+            files.forEach { file ->
+                array.put(
+                    JSONObject()
+                        .put("path", file.path)
+                        .put("directory", file.directory)
+                        .put("size", file.size)
+                        .put("modified", file.modified),
+                )
+            }
+        })
+
     private fun parseBackupOptions(args: JSONObject): BackupOptions = BackupOptions(
         includeProfile = args.optBoolean("include_profile", true),
         includeConversations = args.optBoolean("include_conversations", true),
@@ -2089,6 +2272,7 @@ class OpenAiAgent(
         includePrompts = args.optBoolean("include_prompts", true),
         includeSkills = args.optBoolean("include_skills", true),
         includeWebDav = args.optBoolean("include_webdav", true),
+        includeFileTransfer = args.optBoolean("include_file_transfer", true),
         includeSecrets = args.optBoolean("include_secrets", false),
     )
 
@@ -2596,12 +2780,26 @@ class OpenAiAgent(
                 "上传工作区文件到 WebDAV: ${args.optString("local_path")} -> ${args.optString("remote_path")}",
                 "会把本机工作区文件发送到远程 WebDAV 服务器。",
             )
+            "file_transfer_download_to_workspace" -> ToolApprovalRequest(
+                conversationId,
+                call.name,
+                call.rawArguments,
+                "从文件传输服务器下载到工作区: ${args.optString("remote_path")} -> ${args.optString("local_path")}",
+                "会把 FTP/FTPS/SFTP 远程文件写入当前工作区，可能覆盖同名文件。",
+            )
+            "file_transfer_upload_from_workspace" -> ToolApprovalRequest(
+                conversationId,
+                call.name,
+                call.rawArguments,
+                "上传工作区文件到文件传输服务器: ${args.optString("local_path")} -> ${args.optString("remote_path")}",
+                "会把本机工作区文件发送到远程 FTP/FTPS/SFTP 服务器。",
+            )
             "export_backup" -> ToolApprovalRequest(
                 conversationId,
                 call.name,
                 call.rawArguments,
                 "导出 Lyra Code 备份",
-                if (args.optBoolean("include_secrets")) "备份将包含 API Key、SSH/WebDAV 密码等敏感信息，请确认保存位置可信。" else "会导出配置、对话、Skills 等数据；不包含密钥时仍可能包含私人对话内容。",
+                if (args.optBoolean("include_secrets")) "备份将包含 API Key、SSH/WebDAV/FTP/SFTP 密码等敏感信息，请确认保存位置可信。" else "会导出配置、对话、Skills 等数据；不包含密钥时仍可能包含私人对话内容。",
             )
             "import_backup" -> ToolApprovalRequest(
                 conversationId,
@@ -2634,7 +2832,7 @@ class OpenAiAgent(
                 call.name,
                 call.rawArguments,
                 "管理 Lyra Code 配置: ${args.optString("target")} / ${args.optString("action")}",
-                "会添加、修改、启用、禁用或删除 MCP、SSH、WebDAV、Skills 或 Agent 工具配置；下载 Skill zip、保存密钥、删除配置均需要用户确认。",
+                "会添加、修改、启用、禁用或删除 MCP、SSH、WebDAV、文件传输、Skills 或 Agent 工具配置；下载 Skill zip、保存密钥、删除配置均需要用户确认。",
             )
             else -> if (settings.resolveMcpTool(call.name) != null) {
                 ToolApprovalRequest(
@@ -2990,8 +3188,9 @@ class OpenAiAgent(
             read_web_page 会标注 readable、limited、blocked_by_user 或 blocked_or_dynamic。若页面被用户黑名单拦截，不要绕过黑名单；若页面提示人机验证、Cloudflare、403、登录墙、JavaScript 渲染不足或正文过短，不要把该内容当事实依据；改读其他来源，必要时告知用户该网页存在访问防护。
             当最终回答依赖 read_web_page 或网页搜索结果时，必须先调用 mark_web_sources 声明本轮实际引用的网页；最终回答中把受网页支持的关键结论就近标注来源链接，方便用户点击核对。不要伪造未读取网页的来源。
             WebDAV 云备份未指定 remote_path 时默认上传到 /LyraCode/lyra_backup_latest.zip；从 WebDAV 导入备份时 remote_path 可留空，应用会优先读取 latest 备份，若不存在则自动查找 /LyraCode 下最新的 Lyra backup zip。不要让用户手动猜时间戳文件名。
-            当用户要求“帮我添加/配置/安装/启用/禁用/删除/修改”MCP 服务器、SSH 连接、Skills 或 Agent 工具时，使用 manage_app_config。若用户给的是介绍网页，先 web_search/read_web_page 获取配置 JSON、zip 下载链接或连接参数；缺少 API key、密码、私钥等必要敏感信息时，先向用户索取，不能编造。manage_app_config 会触发用户确认；被拒绝后按用户反馈调整，不要重复提交相同配置。
-            manage_app_config 添加的 MCP、SSH、Skills 与用户在设置页手动添加完全等价，会出现在设置中；Agent 工具只能启用或禁用，不能删除，且不得禁用 manage_app_config 自身。
+            FTP/FTPS/SFTP 文件传输服务器由 list_file_transfer_servers、file_transfer_list、file_transfer_search、file_transfer_download_to_workspace、file_transfer_upload_from_workspace 管理；下载或上传前必须获得用户确认。FTP 是明文协议，涉及密码或敏感文件时建议用户改用 SFTP 或 FTPS。
+            当用户要求“帮我添加/配置/安装/启用/禁用/删除/修改”MCP 服务器、SSH 连接、WebDAV、FTP/FTPS/SFTP 文件传输服务器、Skills 或 Agent 工具时，使用 manage_app_config。若用户给的是介绍网页，先 web_search/read_web_page 获取配置 JSON、zip 下载链接或连接参数；缺少 API key、密码、私钥等必要敏感信息时，先向用户索取，不能编造。manage_app_config 会触发用户确认；被拒绝后按用户反馈调整，不要重复提交相同配置。
+            manage_app_config 添加的 MCP、SSH、WebDAV、FTP/FTPS/SFTP、Skills 与用户在设置页手动添加完全等价，会出现在设置中；Agent 工具只能启用或禁用，不能删除，且不得禁用 manage_app_config 自身。
             如果当前是新会话的首次用户请求，且工具列表中存在 set_conversation_topic，请先调用它为本次对话设置一个 4-12 个汉字或 2-6 个英文词的简短主题标题；标题只概括用户第一条消息，不要包含“关于/请问/帮我”等空泛词。调用后继续正常回答用户。若工具不可用，不要提及标题设置。
             如果工具、MCP 或代码执行生成图片、音频、视频等媒体结果，优先用 Markdown 媒体语法输出，方便 Lyra Code 直接预览：图片使用 ![说明](data:image/png;base64,...) 或 ![说明](https://.../file.png)；视频/音频可输出 ![说明](https://.../file.mp4) 或 ![说明](file:///.../file.mp3)。如果只有原始 base64，尽量补成 data:<mime>;base64,<内容>；如果只有本地路径或远程 URL，直接输出完整路径/URL，不要只写“已生成”。
             媒体文件较大时不要把完整 base64 重复粘贴多次；优先输出可访问 URL 或本地文件路径。只有用户明确需要内联文件，或工具只返回 base64 时，才输出 data URL。
@@ -3151,7 +3350,7 @@ class OpenAiAgent(
             definitions.put(
                 functionWithOptional(
                     "run_command",
-                    "在 Termux 中执行白名单 Shell 命令，并直接返回 exit_code、stdout、stderr。下载文件必须优先使用 download_file；仅当原生下载明确失败、被禁用或不支持目标协议时，才把 curl/wget 作为最后备用手段。不要运行不会退出的长期驻留命令；多行脚本或缩进敏感命令优先用 command_lines，每个数组元素是一行，应用会用 \\n 原样拼接。默认等待 60 秒；确实需要更久时传 timeout_seconds，最大 600。",
+                    "在 Termux 中执行 Shell 命令，并直接返回 exit_code、stdout、stderr；仅明显高风险命令会被拦截。下载文件必须优先使用 download_file；仅当原生下载明确失败、被禁用或不支持目标协议时，才把 curl/wget 作为最后备用手段。不要运行不会退出的长期驻留命令；多行脚本或缩进敏感命令优先用 command_lines，每个数组元素是一行，应用会用 \\n 原样拼接。默认等待 60 秒；确实需要更久时传 timeout_seconds，最大 600。",
                     required = emptyList(),
                     optional = listOf("command" to "string", "command_lines" to "array:string", "workDir" to "string", "timeout_seconds" to "integer"),
                 ),
@@ -3164,7 +3363,7 @@ class OpenAiAgent(
         .put(
             functionWithOptional(
                 "manage_app_config",
-                "配置管理工具。用户要求通过自然语言添加、修改、启用、禁用、删除 MCP 服务器、SSH 连接、WebDAV、Skills 或其他 Agent 工具时调用。若用户要启用已禁用配置或工具但名称不明确，先用 target=all action=list 查看 disabled_summary。支持从网页读取到的 MCP JSON/Skill zip URL 自动落库；需要额外 key/密码时先向用户索取。除 manage_app_config 自身外，agent 工具只能启用/禁用，不能删除。",
+                "配置管理工具。用户要求通过自然语言添加、修改、启用、禁用、删除 MCP 服务器、SSH 连接、WebDAV、FTP/FTPS/SFTP 文件传输服务器、Skills 或其他 Agent 工具时调用。若用户要启用已禁用配置或工具但名称不明确，先用 target=all action=list 查看 disabled_summary。支持从网页读取到的 MCP JSON/Skill zip URL 自动落库；需要额外 key/密码时先向用户索取。除 manage_app_config 自身外，agent 工具只能启用/禁用，不能删除。",
                 required = listOf("target" to "string", "action" to "string"),
                 optional = listOf(
                     "id" to "string",
@@ -3182,6 +3381,12 @@ class OpenAiAgent(
                     "private_key" to "string",
                     "passphrase" to "string",
                     "auth_type" to "string",
+                    "protocol" to "string",
+                    "use_private_key" to "boolean",
+                    "encoding" to "string",
+                    "passive_mode" to "boolean",
+                    "explicit_ftps" to "boolean",
+                    "sync_permissions" to "boolean",
                     "zip_url" to "string",
                     "tool_name" to "string",
                     "user_agent" to "string",
@@ -3255,6 +3460,25 @@ class OpenAiAgent(
         )
         .put(function("webdav_download_to_workspace", "从 WebDAV 下载文件到当前工作区。必须先获得用户确认；local_path 必须是工作区相对路径。", "server_id" to "string", "remote_path" to "string", "local_path" to "string"))
         .put(function("webdav_upload_from_workspace", "把当前工作区文件上传到 WebDAV。必须先获得用户确认；local_path 必须是工作区相对路径。", "server_id" to "string", "local_path" to "string", "remote_path" to "string"))
+        .put(function("list_file_transfer_servers", "列出用户已配置且启用的 FTP/FTPS/SFTP 文件传输服务器。调用文件传输搜索、上传、下载前必须先调用本工具，使用返回的 id 作为 server_id。"))
+        .put(
+            functionWithOptional(
+                "file_transfer_list",
+                "列出指定 FTP/FTPS/SFTP 目录下的文件和子目录详情，返回路径、是否目录、大小、修改时间。文件名未知、搜索不到文件或确认目录结构时优先调用；只读取元数据，不下载文件。",
+                required = listOf("server_id" to "string"),
+                optional = listOf("path" to "string"),
+            ),
+        )
+        .put(
+            functionWithOptional(
+                "file_transfer_search",
+                "在指定 FTP/FTPS/SFTP 服务器中按文件名或路径片段搜索文件。只返回路径和元数据，不会下载文件。",
+                required = listOf("server_id" to "string", "query" to "string"),
+                optional = listOf("path" to "string", "limit" to "integer"),
+            ),
+        )
+        .put(function("file_transfer_download_to_workspace", "从 FTP/FTPS/SFTP 下载文件到当前工作区。必须先获得用户确认；local_path 必须是工作区相对路径。", "server_id" to "string", "remote_path" to "string", "local_path" to "string"))
+        .put(function("file_transfer_upload_from_workspace", "把当前工作区文件上传到 FTP/FTPS/SFTP。必须先获得用户确认；local_path 必须是工作区相对路径。", "server_id" to "string", "local_path" to "string", "remote_path" to "string"))
         .put(
             functionWithOptional(
                 "export_backup",
@@ -3271,6 +3495,7 @@ class OpenAiAgent(
                     "include_prompts" to "boolean",
                     "include_skills" to "boolean",
                     "include_webdav" to "boolean",
+                    "include_file_transfer" to "boolean",
                     "include_secrets" to "boolean",
                 ),
             ),
@@ -3593,6 +3818,7 @@ class OpenAiAgent(
         private const val GLOBAL_SEARCH_RESULT_LIMIT = 120
         private const val MAX_IMAGE_PROMPT_BYTES = 8 * 1024 * 1024
         private const val DEFAULT_WEBDAV_BACKUP_PATH = "/LyraCode/lyra_backup_latest.zip"
+        private const val LOCAL_MCP_CONVERSATION_ID = 0L
         private val JSON_SCHEMA_TYPES = setOf("string", "number", "integer", "boolean", "object", "array")
         private val CONFIGURABLE_AGENT_TOOLS = listOf(
             "list_directory",
@@ -3641,6 +3867,11 @@ class OpenAiAgent(
             "webdav_search",
             "webdav_download_to_workspace",
             "webdav_upload_from_workspace",
+            "list_file_transfer_servers",
+            "file_transfer_list",
+            "file_transfer_search",
+            "file_transfer_download_to_workspace",
+            "file_transfer_upload_from_workspace",
             "export_backup",
             "import_backup",
             "set_todo_list",
@@ -3787,4 +4018,5 @@ fun ChatMessage.toRecord(): ChatRecord = ChatRecord(
     if (role == "assistant") cleanGeneratedText(thinking) else thinking,
     profileId,
     model,
+    createdAt,
 )

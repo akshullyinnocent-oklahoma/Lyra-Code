@@ -1,6 +1,5 @@
 package com.yukisoffd.lyracode
 
-import android.Manifest
 import android.app.Activity
 import android.content.ContentValues
 import android.content.Context
@@ -16,13 +15,9 @@ import android.os.Environment
 import android.provider.Settings
 import android.provider.MediaStore
 import android.util.Base64
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.MediaController
 import android.widget.VideoView
 import android.content.pm.ActivityInfo
-import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -80,7 +75,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.ClickableText
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -91,7 +85,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
@@ -137,12 +130,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -176,7 +167,10 @@ import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
+import com.yukisoffd.lyracode.data.UpdateManager
 import com.yukisoffd.lyracode.data.WebDavServerConfig
+import com.yukisoffd.lyracode.filetransfer.FileTransferClient
+import com.yukisoffd.lyracode.mcp.LocalMcpServerManager
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
@@ -225,8 +219,10 @@ internal fun LyraCodeApp(
     sshExecutor: SshExecutor,
     systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
+    fileTransferClient: FileTransferClient,
     backupManager: BackupManager,
     miniServerManager: MiniServerManager,
+    localMcpServerManager: LocalMcpServerManager,
     downloadTaskManager: DownloadTaskManager,
     scheduledTaskManager: ScheduledTaskManager,
     controller: ChatController,
@@ -242,6 +238,7 @@ internal fun LyraCodeApp(
     onCustomFontScaleChange: (Float) -> Unit,
 ) {
     val pages = listOf("AI 对话", "日志", "统计", "任务", "设置")
+    val context = LocalContext.current
     var selectedPage by rememberSaveable { mutableIntStateOf(PAGE_CHAT) }
     val safeSelectedPage = selectedPage.coerceIn(0, pages.lastIndex)
     val controllerStatus = controller.status.value
@@ -255,6 +252,8 @@ internal fun LyraCodeApp(
     var backupStatus by remember { mutableStateOf("") }
     var appNotice by remember { mutableStateOf("") }
     var backupImportMode by remember { mutableStateOf("supplement") }
+    val updateManager = remember(context) { UpdateManager(context) }
+    var aboutUpdateAvailable by remember { mutableStateOf(updateManager.hasAvailableUpdate()) }
     val appSettingsRevision = controller.settingsRevision.intValue
     val skills = remember(skillsRevision, appSettingsRevision) { settings.installedSkills() }
     var settingsDetailTitle by rememberSaveable { mutableStateOf<String?>(null) }
@@ -270,6 +269,12 @@ internal fun LyraCodeApp(
     fun updateBackupStatus(message: String) {
         backupStatus = message
         if (message.isNotBlank()) appNotice = message
+    }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            updateManager.checkDailyForUpdateIfNeeded().getOrNull()
+        }
+        aboutUpdateAvailable = updateManager.hasAvailableUpdate()
     }
     LaunchedEffect(safeSelectedPage) {
         if (safeSelectedPage != PAGE_SETTINGS) settingsDetailTitle = null
@@ -476,10 +481,12 @@ internal fun LyraCodeApp(
                             mcpClientManager = mcpClientManager,
                             sshExecutor = sshExecutor,
                             systemCommandExecutor = systemCommandExecutor,
-                        webDavClient = webDavClient,
-                        backupManager = backupManager,
-                        miniServerManager = miniServerManager,
-                        workspaceDisplayName = workspaceName,
+                            webDavClient = webDavClient,
+                            fileTransferClient = fileTransferClient,
+                            backupManager = backupManager,
+                            miniServerManager = miniServerManager,
+                            localMcpServerManager = localMcpServerManager,
+                            workspaceDisplayName = workspaceName,
                             skills = skills,
                             skillStatus = skillStatus,
                             backupStatus = backupStatus,
@@ -510,6 +517,8 @@ internal fun LyraCodeApp(
                                 backupZipLauncher.launch("application/zip")
                             },
                             onBackupStatusChange = ::updateBackupStatus,
+                            updateAvailable = aboutUpdateAvailable,
+                            onUpdateAvailabilityChange = { aboutUpdateAvailable = it },
                             settingsBackRequest = settingsBackRequest,
                             onDetailTitleChange = { settingsDetailTitle = it },
                             onToggleSkill = { id, enabled ->
@@ -535,6 +544,7 @@ internal fun LyraCodeApp(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun KimiDrawerContent(
     settings: AppSettings,
@@ -603,12 +613,13 @@ internal fun KimiDrawerContent(
             },
         )
     }
-    LazyColumn(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
         item {
             KimiCardBox {
                 Row(
@@ -621,9 +632,7 @@ internal fun KimiDrawerContent(
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(nickname, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(controller.activeModel.value.ifBlank { "选择模型" }, color = KimiMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    Text("编辑", color = KimiMuted, style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -719,6 +728,7 @@ internal fun KimiDrawerContent(
                 )
             }
         }
+    }
     }
 }
 

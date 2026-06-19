@@ -198,6 +198,7 @@ import com.yukisoffd.lyracode.workspace.UploadedFile
 import com.yukisoffd.lyracode.workspace.UploadedFileManager
 import com.yukisoffd.lyracode.workspace.WorkspaceManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -504,6 +505,11 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             }
         }
         val blankTapInteraction = remember { MutableInteractionSource() }
+        val activeProcessKey = if (isRunning) {
+            renderItems.lastOrNull { it.process.isNotEmpty() }?.key
+        } else {
+            null
+        }
         Box(
             Modifier
                 .weight(1f)
@@ -534,7 +540,11 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                 }
                 items(renderItems, key = { it.key }) { item ->
                     if (item.process.isNotEmpty()) {
-                        AgentProcessSummary(item.process, selectionResetKey)
+                        AgentProcessSummary(
+                            messages = item.process,
+                            selectionResetKey = selectionResetKey,
+                            active = item.key == activeProcessKey,
+                        )
                     } else if (item.message != null) {
                         MessageCard(
                             message = item.message,
@@ -1466,10 +1476,33 @@ internal fun chatRenderItems(messages: List<ChatRecord>): List<ChatRenderItem> {
 }
 
 @Composable
-internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: Int) {
+internal fun AgentProcessSummary(
+    messages: List<ChatRecord>,
+    selectionResetKey: Int,
+    active: Boolean = false,
+) {
     var expanded by rememberSaveable(messages.firstOrNull()?.id ?: 0L) { mutableStateOf(false) }
     val toolCount = messages.count { it.role == "tool" }
     val thinkingCount = messages.count { it.thinking.isNotBlank() || it.role == "assistant" }
+    val processKey = messages.firstOrNull()?.id ?: 0L
+    val fallbackNow = remember(processKey) { System.currentTimeMillis() }
+    var wasActive by rememberSaveable(processKey) { mutableStateOf(false) }
+    var completedAt by rememberSaveable(processKey) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(active, processKey) {
+        if (active) {
+            wasActive = true
+            completedAt = null
+        } else if (wasActive && completedAt == null) {
+            completedAt = System.currentTimeMillis()
+        }
+    }
+    val startedAt = messages.minOfOrNull { it.createdAt } ?: fallbackNow
+    val finishedAt = completedAt ?: messages.maxOfOrNull { it.createdAt } ?: fallbackNow
+    val collapsedText = if (expanded) {
+        "过程记录已展开"
+    } else {
+        "过程记录已收起 · thinking $thinkingCount / 工具 $toolCount"
+    }
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
@@ -1477,8 +1510,13 @@ internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: 
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ProcessDurationHeader(
+                startedAt = startedAt,
+                finishedAt = finishedAt,
+                active = active,
+            )
             CollapsedStatusLine(
-                text = if (expanded) "过程记录已展开" else "过程记录已收起 · thinking $thinkingCount / 工具 $toolCount",
+                text = collapsedText,
                 expanded = expanded,
                 onClick = { expanded = !expanded },
             )
@@ -1489,6 +1527,49 @@ internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: 
             }
         }
     }
+}
+
+@Composable
+internal fun ProcessDurationHeader(
+    startedAt: Long,
+    finishedAt: Long?,
+    active: Boolean,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = if (active) "任务处理中 · " else "任务耗时 · ",
+            color = KimiMuted,
+            style = MaterialTheme.typography.labelSmall,
+        )
+        ProcessDurationText(
+            startedAt = startedAt,
+            finishedAt = finishedAt,
+            active = active,
+        )
+    }
+}
+
+@Composable
+internal fun ProcessDurationText(
+    startedAt: Long,
+    finishedAt: Long?,
+    active: Boolean,
+) {
+    var now by remember(startedAt, finishedAt, active) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt, finishedAt, active) {
+        if (active) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1000L)
+            }
+        }
+    }
+    val endAt = if (active) now else (finishedAt ?: now)
+    Text(
+        text = formatProcessDuration((endAt - startedAt).coerceAtLeast(0L)),
+        color = KimiMuted,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }
 
 @Composable
@@ -1964,6 +2045,18 @@ internal fun MessageCard(
     }
 }
 
+internal fun formatProcessDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return when {
+        hours > 0L -> "${hours}小时${minutes}分${seconds}秒"
+        minutes > 0L -> "${minutes}分${seconds}秒"
+        else -> "${seconds}秒"
+    }
+}
+
 @Composable
 internal fun CollapsedStatusLine(
     text: String,
@@ -2068,8 +2161,18 @@ internal fun stripUploadedMediaBlocks(content: String): String {
 
 @Composable
 internal fun ToolResultContent(content: String, expanded: Boolean, onToggle: () -> Unit) {
+    val previewLimit = 12_000
     val preview = remember(content) {
         content.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().ifBlank { "空结果" }.take(180)
+    }
+    val renderedPreview = remember(content) {
+        content.ifBlank { "..." }.let { value ->
+            if (value.length > previewLimit) {
+                value.take(previewLimit) + "\n\n... 已截断预览，完整工具结果共 ${value.length} 字符。"
+            } else {
+                value
+            }
+        }
     }
     val changes = remember(content) { parseFileChanges(content) }
     var expandedChangePath by rememberSaveable(content) { mutableStateOf<String?>(null) }
@@ -2111,7 +2214,7 @@ internal fun ToolResultContent(content: String, expanded: Boolean, onToggle: () 
     AnimatedVisibility(expanded) {
         SelectionContainer {
             Text(
-                content.ifBlank { "..." },
+                renderedPreview,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 420.dp)

@@ -24,6 +24,7 @@ data class BackupOptions(
     val includePrompts: Boolean = true,
     val includeSkills: Boolean = true,
     val includeWebDav: Boolean = true,
+    val includeFileTransfer: Boolean = true,
     val includeSecrets: Boolean = false,
 )
 
@@ -51,6 +52,7 @@ class BackupManager(
                 remove("reasoningDepth")
             }
             if (!options.includeWebDav) remove("webDavServers")
+            if (!options.includeFileTransfer) remove("fileTransferServers")
             if (!options.includeRoleplay) {
                 remove("immersiveRoleplayEnabled")
                 remove("selectedRoleplayId")

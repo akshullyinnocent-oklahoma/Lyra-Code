@@ -184,6 +184,7 @@ import com.yukisoffd.lyracode.data.BackupManager
 import com.yukisoffd.lyracode.data.BackupOptions
 import com.yukisoffd.lyracode.data.Conversation
 import com.yukisoffd.lyracode.data.ConversationStore
+import com.yukisoffd.lyracode.data.LocalMcpServerConfig
 import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.MiniServerConfig
@@ -194,7 +195,10 @@ import com.yukisoffd.lyracode.data.SystemPromptPreset
 import com.yukisoffd.lyracode.data.AppUpdateInfo
 import com.yukisoffd.lyracode.data.UpdateDownloadProgress
 import com.yukisoffd.lyracode.data.UpdateManager
+import com.yukisoffd.lyracode.data.FileTransferServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
+import com.yukisoffd.lyracode.filetransfer.FileTransferClient
+import com.yukisoffd.lyracode.mcp.LocalMcpServerManager
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
@@ -236,8 +240,10 @@ internal fun SettingsScreen(
     sshExecutor: SshExecutor,
     systemCommandExecutor: SystemCommandExecutor,
     webDavClient: WebDavClient,
+    fileTransferClient: FileTransferClient,
     backupManager: BackupManager,
     miniServerManager: MiniServerManager,
+    localMcpServerManager: LocalMcpServerManager,
     workspaceDisplayName: String,
     skills: List<SkillPack>,
     skillStatus: String,
@@ -258,6 +264,8 @@ internal fun SettingsScreen(
     onImportSkillMarkdown: (String) -> Unit,
     onImportBackup: (String) -> Unit,
     onBackupStatusChange: (String) -> Unit,
+    updateAvailable: Boolean,
+    onUpdateAvailabilityChange: (Boolean) -> Unit,
     settingsBackRequest: Int,
     onDetailTitleChange: (String?) -> Unit,
     onToggleSkill: (String, Boolean) -> Unit,
@@ -337,8 +345,10 @@ internal fun SettingsScreen(
                     "tools" -> AgentToolSettings(settings, termuxExecutor, controller.settingsRevision.intValue)
                     "termux" -> TermuxSettings(settings, termuxExecutor, workspaceManager)
                     "mcp" -> McpSettings(settings, mcpClientManager, controller.settingsRevision.intValue)
+                    "local_mcp" -> LocalMcpServerSettings(settings, localMcpServerManager, controller.settingsRevision.intValue)
                     "ssh" -> SshSettings(settings, sshExecutor, controller.settingsRevision.intValue)
                     "webdav" -> WebDavSettings(settings, webDavClient, controller.settingsRevision.intValue)
+                    "file_transfer" -> FileTransferSettings(settings, fileTransferClient, controller.settingsRevision.intValue)
                     "mini_server" -> MiniServerSettings(
                         settings,
                         miniServerManager,
@@ -373,7 +383,11 @@ internal fun SettingsScreen(
                         onDeleteSkill = onDeleteSkill,
                     )
                     "licenses" -> OpenSourceLicensesScreen()
-                    "about" -> AboutSoftwareScreen(onOpenDeviceInfo = { detail = "device" })
+                    "about" -> AboutSoftwareScreen(
+                        updateAvailable = updateAvailable,
+                        onUpdateAvailabilityChange = onUpdateAvailabilityChange,
+                        onOpenDeviceInfo = { detail = "device" },
+                    )
                     "device" -> DeviceInfoScreen()
                     else -> Text("该设置项暂未开放。", color = KimiMuted)
                 }
@@ -404,9 +418,13 @@ internal fun SettingsScreen(
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Extension, "MCP 服务器", "配置远程 MCP 工具服务器") { detail = "mcp" }
                 KimiDivider()
+                KimiMenuRow(Icons.Default.Hub, "MCP 服务端", "将本机工具提供给其他 MCP 客户端") { detail = "local_mcp" }
+                KimiDivider()
                 KimiMenuRow(Icons.Default.Dns, "SSH 连接", "配置可由 AI 调用的远程服务器") { detail = "ssh" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Cloud, "WebDAV", "配置云端文件与备份服务器") { detail = "webdav" }
+                KimiDivider()
+                KimiMenuRow(Icons.Default.SyncAlt, "文件传输", "配置 FTP/FTPS/SFTP 存储服务器") { detail = "file_transfer" }
                 KimiDivider()
                 KimiMenuRow(Icons.Default.Language, "微型服务器", "工作区 HTTP 静态站点调试") { detail = "mini_server" }
             }
@@ -486,8 +504,10 @@ internal fun settingsDetailTitle(detail: String): String = when (detail) {
     "roleplay" -> "沉浸扮演模式"
     "termux" -> "Termux"
     "mcp" -> "MCP 服务器"
+    "local_mcp" -> "MCP 服务端"
     "ssh" -> "SSH 连接"
     "webdav" -> "WebDAV"
+    "file_transfer" -> "文件传输"
     "mini_server" -> "微型服务器"
     "mini_server_logs" -> "终端日志"
     "backup" -> "数据导出导入"
@@ -782,27 +802,30 @@ internal fun ModelServiceSettings(
     controller: ChatController,
 ) {
     var profiles by remember { mutableStateOf(controller.profiles.toList()) }
-    var editingIndex by rememberSaveable {
-        mutableIntStateOf(controller.profiles.indexOfFirst { it.id == controller.activeProfileId.value }.takeIf { it >= 0 } ?: 0)
-    }
+    var editingProfileId by rememberSaveable { mutableStateOf<String?>(null) }
+    var draftNewProfile by remember { mutableStateOf<ApiProfile?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(controller.activeProfileId.value, controller.profiles.size, controller.settingsRevision.intValue) {
         val refreshed = controller.profiles.toList()
         profiles = refreshed
-        val activeIndex = refreshed.indexOfFirst { it.id == controller.activeProfileId.value }
-        editingIndex = if (activeIndex >= 0) {
-            activeIndex
-        } else {
-            editingIndex.coerceIn(0, (refreshed.size - 1).coerceAtLeast(0))
+        if (editingProfileId != null && refreshed.none { it.id == editingProfileId } && draftNewProfile?.id != editingProfileId) {
+            editingProfileId = null
         }
     }
-    val current = profiles.getOrNull(editingIndex) ?: profiles.firstOrNull()
+    BackHandler(enabled = editingProfileId != null) {
+        if (draftNewProfile?.id == editingProfileId) draftNewProfile = null
+        editingProfileId = null
+    }
+    val editingIndex = profiles.indexOfFirst { it.id == editingProfileId }
+    val current = if (draftNewProfile?.id == editingProfileId) draftNewProfile else profiles.getOrNull(editingIndex)
     var platformMenuExpanded by remember { mutableStateOf(false) }
-    var name by remember(current?.id) { mutableStateOf(current?.name.orEmpty()) }
-    var key by remember(current?.id) { mutableStateOf(current?.apiKey.orEmpty()) }
-    var baseUrl by remember(current?.id) { mutableStateOf(current?.baseUrl.orEmpty()) }
-    var apiFormat by remember(current?.id) { mutableStateOf(current?.apiFormat ?: ApiProfile.API_FORMAT_OPENAI) }
-    var model by remember(current?.id) { mutableStateOf(current?.selectedModel.orEmpty()) }
-    var savedModels by remember(current?.id) { mutableStateOf(current?.savedModels.orEmpty().joinToString("\n")) }
+    val editKey = editingProfileId ?: "none"
+    var name by remember(editKey) { mutableStateOf(current?.name.orEmpty()) }
+    var key by remember(editKey) { mutableStateOf(current?.apiKey.orEmpty()) }
+    var baseUrl by remember(editKey) { mutableStateOf(current?.baseUrl.orEmpty()) }
+    var apiFormat by remember(editKey) { mutableStateOf(current?.apiFormat ?: ApiProfile.API_FORMAT_OPENAI) }
+    var model by remember(editKey) { mutableStateOf(current?.selectedModel.orEmpty()) }
+    var savedModels by remember(editKey) { mutableStateOf(current?.savedModels.orEmpty().joinToString("\n")) }
     var status by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ApiProfile?>(null) }
@@ -821,8 +844,15 @@ internal fun ModelServiceSettings(
     }
     fun saveCurrentProfile() {
         val updated = draftProfile()
-        profiles = profiles.mapIndexed { index, item -> if (index == editingIndex) updated else item }
-        controller.saveProfiles(profiles, updated.id)
+        val updatedProfiles = if (editingIndex >= 0) {
+            profiles.mapIndexed { index, item -> if (index == editingIndex) updated else item }
+        } else {
+            profiles + updated
+        }
+        profiles = updatedProfiles
+        draftNewProfile = null
+        controller.saveProfiles(updatedProfiles, updated.id)
+        editingProfileId = updated.id
         status = ""
         notice = "模型服务已保存"
     }
@@ -833,9 +863,12 @@ internal fun ModelServiceSettings(
             targetName = target.name.ifBlank { target.baseUrl },
             onDismiss = { deleteTarget = null },
             onConfirm = {
-                profiles = profiles.filterNot { it.id == target.id }
-                editingIndex = 0
-                controller.saveProfiles(profiles, profiles.first().id)
+                val remaining = profiles.filterNot { it.id == target.id }
+                if (remaining.isNotEmpty()) {
+                    profiles = remaining
+                    editingProfileId = null
+                    controller.saveProfiles(remaining, remaining.first().id)
+                }
                 status = ""
                 notice = "已删除 ${target.name.ifBlank { "模型服务" }}"
             },
@@ -843,150 +876,174 @@ internal fun ModelServiceSettings(
     }
 
     Box(Modifier.fillMaxSize()) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            KimiCardBox {
-                KimiMenuRow(Icons.Default.Cloud, "当前平台", current?.name ?: "未命名平台")
-                KimiDivider()
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.weight(1f)) {
-                        OutlinedButton(
-                            onClick = { platformMenuExpanded = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = KimiPillShape,
-                        ) {
-                            Text(
-                                current?.name?.ifBlank { "未命名平台" } ?: "选择平台",
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text("▼")
-                        }
-                        DropdownMenu(
-                            expanded = platformMenuExpanded,
-                            onDismissRequest = { platformMenuExpanded = false },
-                        ) {
-                            profiles.forEachIndexed { index, profile ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            if (index == editingIndex) "${profile.name.ifBlank { "平台${index + 1}" }} ✓" else profile.name.ifBlank { "平台${index + 1}" },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    },
-                                    onClick = {
-                                        editingIndex = index
-                                        platformMenuExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Button(onClick = {
-                        profiles = profiles + ApiProfile(
-                            id = AppSettings.newId(),
-                            name = "新平台",
-                            apiKey = "",
-                            baseUrl = "https://api.openai.com/v1",
-                            apiFormat = ApiProfile.API_FORMAT_OPENAI,
-                            selectedModel = "gpt-4o-mini",
-                            savedModels = listOf("gpt-4o-mini"),
-                        )
-                        editingIndex = profiles.lastIndex
-                    }, shape = KimiPillShape) { Text("添加") }
+        AnimatedContent(
+            targetState = editingProfileId != null,
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(180)) + slideInHorizontally { if (targetState) it / 6 else -it / 6 })
+                    .togetherWith(fadeOut(animationSpec = tween(140)) + slideOutHorizontally { if (targetState) -it / 8 else it / 8 })
+            },
+            label = "model-service-page",
+        ) { editing ->
+        if (!editing) {
+            val filtered = remember(profiles, query) {
+                val q = query.trim()
+                if (q.isBlank()) profiles else profiles.filter {
+                    it.name.contains(q, ignoreCase = true) ||
+                        it.baseUrl.contains(q, ignoreCase = true) ||
+                        it.selectedModel.contains(q, ignoreCase = true)
                 }
             }
-            KimiCardBox {
-                Text("接口格式", style = MaterialTheme.typography.titleSmall)
-                Row(
-                    Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ApiFormatOption("OpenAI SDK", ApiProfile.API_FORMAT_OPENAI, apiFormat) {
-                        apiFormat = it
-                        if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
-                    }
-                    ApiFormatOption("Anthropic Messages", ApiProfile.API_FORMAT_ANTHROPIC, apiFormat) {
-                        apiFormat = it
-                        if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
-                    }
-                    ApiFormatOption("Gemini GenerateContent", ApiProfile.API_FORMAT_GEMINI, apiFormat) {
-                        apiFormat = it
-                        if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CapsuleTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = "搜索模型服务",
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary) },
+                    )
+                    IconButton(
+                        onClick = {
+                            val newProfile = ApiProfile(
+                                id = AppSettings.newId(),
+                                name = "新平台",
+                                apiKey = "",
+                                baseUrl = "https://api.openai.com/v1",
+                                apiFormat = ApiProfile.API_FORMAT_OPENAI,
+                                selectedModel = "gpt-4o-mini",
+                                savedModels = listOf("gpt-4o-mini"),
+                            )
+                            draftNewProfile = newProfile
+                            editingProfileId = newProfile.id
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                    ) {
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "添加模型服务",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
                     }
                 }
-                Text(
-                    apiFormatDescription(apiFormat),
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                OutlinedTextField(value = name, onValueChange = { name = it }, modifier = Modifier.fillMaxWidth(), label = { Text("服务商名称") }, singleLine = true)
-                OutlinedTextField(value = key, onValueChange = { key = it }, modifier = Modifier.fillMaxWidth(), label = { Text(apiKeyLabel(apiFormat)) }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
-                OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("基础 URL") }, singleLine = true)
-                if (baseUrl.trim().startsWith("http://", ignoreCase = true)) {
+                if (filtered.isEmpty()) {
+                    KimiCardBox {
+                        Text("没有匹配的模型服务", color = KimiMuted)
+                    }
+                } else {
+                    filtered.forEach { profile ->
+                        ModelProviderRow(
+                            profile = profile,
+                            selected = profile.id == controller.activeProfileId.value,
+                            onClick = { editingProfileId = profile.id },
+                            onDelete = { if (profiles.size > 1) deleteTarget = profile else notice = "至少保留一个模型服务" },
+                        )
+                    }
+                }
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(current?.name?.ifBlank { "新模型服务" } ?: "模型服务", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    IconButton(onClick = {
+                        if (draftNewProfile?.id == editingProfileId) draftNewProfile = null
+                        editingProfileId = null
+                    }) {
+                        Icon(Icons.Default.ViewList, contentDescription = "返回列表")
+                    }
+                }
+                KimiCardBox {
+                    Text("接口格式", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ApiFormatOption("OpenAI SDK", ApiProfile.API_FORMAT_OPENAI, apiFormat) {
+                            apiFormat = it
+                            if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
+                        }
+                        ApiFormatOption("Anthropic Messages", ApiProfile.API_FORMAT_ANTHROPIC, apiFormat) {
+                            apiFormat = it
+                            if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
+                        }
+                        ApiFormatOption("Gemini GenerateContent", ApiProfile.API_FORMAT_GEMINI, apiFormat) {
+                            apiFormat = it
+                            if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
+                        }
+                    }
                     Text(
-                        "安全提示：当前基础 URL 使用 HTTP 明文传输，API Key 和对话内容可能被同一网络中的第三方截获。",
-                        color = MaterialTheme.colorScheme.error,
+                        apiFormatDescription(apiFormat),
+                        color = KimiMuted,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                }
-                Text(
-                    endpointHint(apiFormat, baseUrl),
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                OutlinedTextField(value = model, onValueChange = { model = it }, modifier = Modifier.fillMaxWidth(), label = { Text("默认模型") }, singleLine = true)
-                OutlinedTextField(value = savedModels, onValueChange = { savedModels = it }, modifier = Modifier.fillMaxWidth(), label = { Text("预保存模型，每行一个") }, minLines = 3)
-                Column(
-                    horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Button(onClick = { saveCurrentProfile() }, shape = KimiPillShape) { Text("保存") }
-                    OutlinedButton(
-                        onClick = {
-                            val draft = draftProfile()
-                            status = "正在获取模型..."
-                            controller.fetchModelsForProfile(draft) { result ->
-                                result.fold(
-                                    onSuccess = { models ->
-                                        val distinct = models.filter { it.isNotBlank() }.distinct()
-                                        if (distinct.isEmpty()) {
-                                            status = "未获取到可用模型"
-                                        } else {
-                                            model = distinct.first()
-                                            savedModels = distinct.joinToString("\n")
-                                            val updated = draftProfile(selectedModelOverride = distinct.first(), savedModelsOverride = distinct)
-                                            profiles = profiles.mapIndexed { index, item -> if (index == editingIndex) updated else item }
-                                            controller.saveProfiles(profiles, updated.id)
-                                            status = ""
-                                            notice = "已获取 ${distinct.size} 个模型并保存"
-                                        }
-                                    },
-                                    onFailure = { status = it.message.orEmpty().ifBlank { "获取模型失败" } },
-                                )
-                            }
-                        },
-                        shape = KimiPillShape,
-                    ) { Text("获取并替换模型") }
-                    OutlinedButton(
-                        enabled = profiles.size > 1,
-                        onClick = { current?.let { deleteTarget = it } },
-                        shape = KimiPillShape,
+                    OutlinedTextField(value = name, onValueChange = { name = it }, modifier = Modifier.fillMaxWidth(), label = { Text("服务商名称") }, singleLine = true)
+                    OutlinedTextField(value = key, onValueChange = { key = it }, modifier = Modifier.fillMaxWidth(), label = { Text(apiKeyLabel(apiFormat)) }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                    OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, modifier = Modifier.fillMaxWidth(), label = { Text("基础 URL") }, singleLine = true)
+                    if (baseUrl.trim().startsWith("http://", ignoreCase = true)) {
+                        Text(
+                            "安全提示：当前基础 URL 使用 HTTP 明文传输，API Key 和对话内容可能被同一网络中的第三方截获。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Text(
+                        endpointHint(apiFormat, baseUrl),
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(value = model, onValueChange = { model = it }, modifier = Modifier.fillMaxWidth(), label = { Text("默认模型") }, singleLine = true)
+                    OutlinedTextField(value = savedModels, onValueChange = { savedModels = it }, modifier = Modifier.fillMaxWidth(), label = { Text("预保存模型，每行一个") }, minLines = 3)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("删除平台")
+                        Button(onClick = { saveCurrentProfile() }, shape = KimiPillShape) { Text("保存") }
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                val draft = draftProfile()
+                                status = "正在获取模型..."
+                                controller.fetchModelsForProfile(draft) { result ->
+                                    result.fold(
+                                        onSuccess = { models ->
+                                            val distinct = models.filter { it.isNotBlank() }.distinct()
+                                            if (distinct.isEmpty()) {
+                                                status = "未获取到可用模型"
+                                            } else {
+                                                model = distinct.first()
+                                                savedModels = distinct.joinToString("\n")
+                                                val updated = draftProfile(selectedModelOverride = distinct.first(), savedModelsOverride = distinct)
+                                                val updatedProfiles = if (editingIndex >= 0) {
+                                                    profiles.mapIndexed { index, item -> if (index == editingIndex) updated else item }
+                                                } else {
+                                                    profiles + updated
+                                                }
+                                                profiles = updatedProfiles
+                                                draftNewProfile = null
+                                                controller.saveProfiles(updatedProfiles, updated.id)
+                                                status = ""
+                                                notice = "已获取 ${distinct.size} 个模型并保存"
+                                            }
+                                        },
+                                        onFailure = { status = it.message.orEmpty().ifBlank { "获取模型失败" } },
+                                    )
+                                }
+                            },
+                            shape = KimiPillShape,
+                        ) { Text("获取并替换模型", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        IconButton(
+                            enabled = profiles.size > 1,
+                            onClick = { current?.let { deleteTarget = it } },
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "删除平台")
+                        }
                     }
                 }
+                if (status.isNotBlank()) Text(status, color = KimiMuted)
             }
-            if (status.isNotBlank()) Text(status, color = KimiMuted)
+        }
         }
         TransientNotice(
             message = notice,
@@ -1112,6 +1169,99 @@ internal fun ThemeSettings(
 }
 
 @Composable
+internal fun ProviderLogoBadge(profile: ApiProfile, modifier: Modifier = Modifier) {
+    val name = profile.name.ifBlank { profile.baseUrl }.trim()
+    val icon = when {
+        name.contains("gemini", ignoreCase = true) || profile.apiFormat == ApiProfile.API_FORMAT_GEMINI -> Icons.Default.AutoAwesome
+        name.contains("anthropic", ignoreCase = true) || name.contains("claude", ignoreCase = true) || profile.apiFormat == ApiProfile.API_FORMAT_ANTHROPIC -> Icons.Default.Psychology
+        name.contains("deepseek", ignoreCase = true) -> Icons.Default.WaterDrop
+        name.contains("openrouter", ignoreCase = true) -> Icons.Default.Route
+        name.contains("vercel", ignoreCase = true) -> Icons.Default.ChangeCircle
+        name.contains("openai", ignoreCase = true) -> Icons.Default.Hub
+        else -> Icons.Default.Cloud
+    }
+    Box(
+        modifier
+            .size(54.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.68f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(30.dp))
+    }
+}
+
+@Composable
+internal fun ModelProviderRow(
+    profile: ApiProfile,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f) else MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(profile.name.ifBlank { "未命名平台" }, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (profile.baseUrl.isNotBlank()) {
+                    Text(profile.baseUrl, color = KimiMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "启用",
+                        modifier = Modifier
+                            .clip(KimiPillShape)
+                            .background(KimiGreen.copy(alpha = 0.28f))
+                            .padding(horizontal = 9.dp, vertical = 3.dp),
+                        color = KimiGreen,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Text(
+                        "${profile.savedModels.size} 个模型",
+                        modifier = Modifier
+                            .clip(KimiPillShape)
+                            .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f))
+                            .padding(horizontal = 9.dp, vertical = 3.dp),
+                        color = MaterialTheme.colorScheme.secondary,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Text(
+                        apiFormatShortName(profile.apiFormat),
+                        color = KimiMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            if (selected) {
+                Icon(Icons.Default.CheckCircle, contentDescription = "当前", tint = MaterialTheme.colorScheme.primary)
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = "删除", tint = KimiMuted)
+            }
+        }
+    }
+}
+
+internal fun apiFormatShortName(format: String): String = when (format) {
+    ApiProfile.API_FORMAT_ANTHROPIC -> "Anthropic"
+    ApiProfile.API_FORMAT_GEMINI -> "Gemini"
+    else -> "OpenAI"
+}
+
+@Composable
 internal fun WebSearchSettings(
     settings: AppSettings,
     externalRevision: Int = 0,
@@ -1124,11 +1274,23 @@ internal fun WebSearchSettings(
             .map { raw ->
                 val clean = raw.trim().trimEnd('/').trim()
                 if (clean.isBlank() || clean.startsWith("#")) "" else {
-                    val withScheme = if (clean.contains("://")) clean else "https://$clean"
-                    runCatching { Uri.parse(withScheme).host.orEmpty() }.getOrDefault("")
+                    val withoutScheme = clean.substringAfter("://", clean)
+                    val authority = withoutScheme
+                        .substringBefore('/')
+                        .substringBefore('?')
+                        .substringBefore('#')
+                        .substringAfterLast('@')
+                    val hostPart = authority
+                        .let { if (it.startsWith("[")) it.substringBefore(']') + "]" else it.substringBefore(':') }
                         .lowercase()
-                        .removePrefix("www.")
                         .trim('.')
+                    val host = hostPart.removePrefix("*.").trim('.')
+                    when {
+                        host.isBlank() -> ""
+                        hostPart.startsWith("*.") && !host.contains('.') -> ""
+                        hostPart.startsWith("*.") -> "*.$host"
+                        else -> host
+                    }
                 }
             }
             .filter { it.isNotBlank() }
@@ -1141,7 +1303,7 @@ internal fun WebSearchSettings(
             Column(Modifier.weight(1f)) {
                 Text("网站黑名单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    "AI 联网搜索和网页读取会跳过这些域名。支持每行填写域名或完整 URL。",
+                    "AI 联网搜索和网页读取会跳过这些域名。普通域名精确匹配，* 通配符匹配子域名。",
                     color = KimiMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1156,13 +1318,13 @@ internal fun WebSearchSettings(
             },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("每行一个域名或 URL") },
-            placeholder = { Text("x.com\nhttps://example.com/\nbaijiahao.baidu.com") },
+            placeholder = { Text("x.com\nwww.x.com\n*.example.com\nhttps://baijiahao.baidu.com/") },
             minLines = 8,
             maxLines = 14,
             textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
         )
         Text(
-            "保存后会自动归一化：移除协议、尾部斜杠和 www. 前缀；子域名也会被拦截，例如 example.com 会匹配 news.example.com。",
+            "保存后会自动归一化：移除协议、路径和尾部斜杠，但保留 www.。例如 x.com 只匹配 x.com；*.x.com 匹配 www.x.com、news.x.com 等子域名；如需同时拦截根域名和全部子域名，请同时填写 x.com 与 *.x.com。",
             color = KimiMuted,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -2108,6 +2270,262 @@ internal fun defaultWebDavServer(): WebDavServerConfig = WebDavServerConfig(
 )
 
 @Composable
+internal fun FileTransferSettings(settings: AppSettings, fileTransferClient: FileTransferClient, externalRevision: Int = 0) {
+    val scope = rememberCoroutineScope()
+    var revision by remember { mutableIntStateOf(0) }
+    val servers = remember(revision, externalRevision) { settings.fileTransferServers() }
+    var editing by remember { mutableStateOf<FileTransferServerConfig?>(null) }
+    var deleteTarget by remember { mutableStateOf<FileTransferServerConfig?>(null) }
+    var status by remember { mutableStateOf("") }
+
+    fun saveServers(updated: List<FileTransferServerConfig>) {
+        settings.saveFileTransferServers(updated)
+        revision++
+    }
+
+    editing?.let { server ->
+        FileTransferServerDialog(
+            initial = server,
+            onDismiss = { editing = null },
+            onSave = { saved ->
+                val updated = servers.toMutableList()
+                val index = updated.indexOfFirst { it.id == saved.id }
+                if (index >= 0) updated[index] = saved else updated += saved
+                saveServers(updated)
+                editing = null
+                status = "文件传输配置已保存"
+            },
+        )
+    }
+    deleteTarget?.let { server ->
+        ConfirmDeleteDialog(
+            title = "删除文件传输配置",
+            message = "该操作会删除此 ${server.protocol.uppercase(Locale.US)} 服务器配置和保存的认证信息。",
+            targetName = server.name.ifBlank { server.host },
+            onDismiss = { deleteTarget = null },
+            onConfirm = {
+                saveServers(servers.filterNot { it.id == server.id })
+                status = "已删除 ${server.name}"
+            },
+        )
+    }
+
+    KimiCardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("FTP / FTPS / SFTP", style = MaterialTheme.typography.titleMedium)
+                Text("用于远程文件搜索、上传和下载；AI 执行上传下载前仍需用户确认。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+            }
+            Button(onClick = { editing = defaultFileTransferServer(AppSettings.FILE_TRANSFER_SFTP) }, shape = KimiPillShape) { Text("添加") }
+        }
+        if (status.isNotBlank()) Text(status, color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+    }
+
+    if (servers.isEmpty()) {
+        KimiCardBox {
+            Text("暂无文件传输服务器", style = MaterialTheme.typography.titleSmall)
+            Text("添加 FTP、FTPS 或 SFTP 后，AI 可列出远程目录、搜索文件，并在用户确认后下载到工作区或从工作区上传。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
+    servers.forEach { server ->
+        KimiCardBox {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(server.name, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (server.hideAddressInDrawer) "地址已隐藏" else "${server.protocol.uppercase(Locale.US)}://${server.host}:${server.port}",
+                        color = KimiMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    val auth = if (server.protocol == AppSettings.FILE_TRANSFER_SFTP && server.usePrivateKey) "密钥登录" else server.username.ifBlank { "匿名" }
+                    Text("$auth · ${server.initialPath.ifBlank { "/" }}", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+                    if (server.protocol == AppSettings.FILE_TRANSFER_FTP) {
+                        Text("安全提示：FTP 明文连接可能泄露账号、密码和文件内容。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Switch(
+                    checked = server.enabled,
+                    onCheckedChange = { enabled ->
+                        saveServers(servers.map { if (it.id == server.id) it.copy(enabled = enabled) else it })
+                    },
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        status = "正在测试 ${server.name}..."
+                        scope.launch {
+                            status = withContext(Dispatchers.IO) {
+                                fileTransferClient.test(server).fold(
+                                    onSuccess = { "${server.protocol.uppercase(Locale.US)} 测试成功，当前目录 ${it.size} 项" },
+                                    onFailure = { "${server.protocol.uppercase(Locale.US)} 测试失败：${it.message}" },
+                                )
+                            }
+                        }
+                    },
+                    shape = KimiPillShape,
+                ) { Text("测试连接") }
+                IconButton(onClick = { editing = server }) {
+                    Icon(Icons.Default.Edit, contentDescription = "编辑文件传输")
+                }
+                IconButton(onClick = { deleteTarget = server }) {
+                    Icon(Icons.Default.Delete, contentDescription = "删除文件传输")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun FileTransferServerDialog(
+    initial: FileTransferServerConfig,
+    onDismiss: () -> Unit,
+    onSave: (FileTransferServerConfig) -> Unit,
+) {
+    var protocol by rememberSaveable(initial.id) { mutableStateOf(AppSettings.normalizeFileTransferProtocol(initial.protocol)) }
+    var name by rememberSaveable(initial.id) { mutableStateOf(initial.name) }
+    var host by rememberSaveable(initial.id) { mutableStateOf(initial.host) }
+    var portText by rememberSaveable(initial.id) { mutableStateOf(initial.port.toString()) }
+    var username by rememberSaveable(initial.id) { mutableStateOf(initial.username) }
+    var password by rememberSaveable(initial.id) { mutableStateOf(initial.password) }
+    var usePrivateKey by rememberSaveable(initial.id) { mutableStateOf(initial.usePrivateKey) }
+    var privateKey by rememberSaveable(initial.id) { mutableStateOf(initial.privateKey) }
+    var passphrase by rememberSaveable(initial.id) { mutableStateOf(initial.passphrase) }
+    var initialPath by rememberSaveable(initial.id) { mutableStateOf(initial.initialPath) }
+    var note by rememberSaveable(initial.id) { mutableStateOf(initial.note) }
+    var encoding by rememberSaveable(initial.id) { mutableStateOf(initial.encoding) }
+    var passiveMode by rememberSaveable(initial.id) { mutableStateOf(initial.passiveMode) }
+    var explicitFtps by rememberSaveable(initial.id) { mutableStateOf(initial.explicitFtps) }
+    var multiThread by rememberSaveable(initial.id) { mutableStateOf(initial.multiThread) }
+    var syncPermissions by rememberSaveable(initial.id) { mutableStateOf(initial.syncPermissions) }
+    var hideAddress by rememberSaveable(initial.id) { mutableStateOf(initial.hideAddressInDrawer) }
+    var enabled by rememberSaveable(initial.id) { mutableStateOf(initial.enabled) }
+    var protocolMenu by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("文件传输") },
+        text = {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box {
+                    OutlinedButton(onClick = { protocolMenu = true }, shape = KimiPillShape) {
+                        Text(protocol.uppercase(Locale.US))
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                    }
+                    DropdownMenu(expanded = protocolMenu, onDismissRequest = { protocolMenu = false }) {
+                        listOf(AppSettings.FILE_TRANSFER_SFTP, AppSettings.FILE_TRANSFER_FTP, AppSettings.FILE_TRANSFER_FTPS).forEach { item ->
+                            DropdownMenuItem(
+                                text = { Text(item.uppercase(Locale.US)) },
+                                onClick = {
+                                    protocol = item
+                                    portText = AppSettings.defaultFileTransferPort(item).toString()
+                                    if (item == AppSettings.FILE_TRANSFER_SFTP && username == "anonymous") username = ""
+                                    if (item != AppSettings.FILE_TRANSFER_SFTP && username.isBlank()) username = "anonymous"
+                                    protocolMenu = false
+                                },
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(value = name, onValueChange = { name = it }, modifier = Modifier.fillMaxWidth(), label = { Text("服务名") }, singleLine = true)
+                OutlinedTextField(value = host, onValueChange = { host = it }, modifier = Modifier.fillMaxWidth(), label = { Text("主机") }, singleLine = true)
+                OutlinedTextField(value = portText, onValueChange = { portText = it.filter(Char::isDigit).take(5) }, modifier = Modifier.fillMaxWidth(), label = { Text("端口") }, singleLine = true)
+                OutlinedTextField(value = username, onValueChange = { username = it }, modifier = Modifier.fillMaxWidth(), label = { Text(if (protocol == AppSettings.FILE_TRANSFER_SFTP) "用户名" else "用户名，可空") }, singleLine = true)
+                if (protocol == AppSettings.FILE_TRANSFER_SFTP) {
+                    WebDavSwitchRow("使用密钥登录", "开启后使用私钥和可选口令登录 SFTP。", usePrivateKey) { usePrivateKey = it }
+                }
+                if (protocol == AppSettings.FILE_TRANSFER_SFTP && usePrivateKey) {
+                    OutlinedTextField(value = privateKey, onValueChange = { privateKey = it }, modifier = Modifier.fillMaxWidth(), label = { Text("私钥内容") }, minLines = 4)
+                    OutlinedTextField(value = passphrase, onValueChange = { passphrase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("私钥口令，可空") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                } else {
+                    OutlinedTextField(value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(), label = { Text("密码，可空") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                }
+                if (protocol == AppSettings.FILE_TRANSFER_FTP) {
+                    Text("FTP 是明文协议，建议只在可信局域网使用；公网或敏感文件请优先使用 SFTP/FTPS。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedTextField(value = initialPath, onValueChange = { initialPath = it }, modifier = Modifier.fillMaxWidth(), label = { Text("初始路径") }, singleLine = true)
+                OutlinedTextField(value = note, onValueChange = { note = it }, modifier = Modifier.fillMaxWidth(), label = { Text("备注") }, minLines = 2)
+                OutlinedTextField(value = encoding, onValueChange = { encoding = it }, modifier = Modifier.fillMaxWidth(), label = { Text("编码") }, singleLine = true)
+                if (protocol != AppSettings.FILE_TRANSFER_SFTP) {
+                    WebDavSwitchRow("被动模式", "FTP/FTPS 推荐开启被动模式，兼容 NAT 和多数服务器。", passiveMode) { passiveMode = it }
+                }
+                if (protocol == AppSettings.FILE_TRANSFER_FTPS) {
+                    WebDavSwitchRow("显式 FTPS", "使用 AUTH TLS 升级连接；关闭后尝试隐式 FTPS。", explicitFtps) { explicitFtps = it }
+                }
+                WebDavSwitchRow("启用多线程传输", "保存此偏好，后续大文件传输可按此策略扩展。", multiThread) { multiThread = it }
+                WebDavSwitchRow("传输时同步文件权限", "仅部分 SFTP 服务器支持。", syncPermissions) { syncPermissions = it }
+                WebDavSwitchRow("在侧栏隐藏地址", "隐藏主机地址以避免旁人看到服务器信息。", hideAddress) { hideAddress = it }
+                WebDavSwitchRow("启用此服务器", "禁用后 AI 无法看到或调用该服务器。", enabled) { enabled = it }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val normalizedProtocol = AppSettings.normalizeFileTransferProtocol(protocol)
+                    onSave(
+                        FileTransferServerConfig(
+                            id = initial.id.ifBlank { AppSettings.newId() },
+                            name = name.ifBlank { normalizedProtocol.uppercase(Locale.US) },
+                            protocol = normalizedProtocol,
+                            host = host.trim(),
+                            port = portText.toIntOrNull()?.coerceIn(1, 65535) ?: AppSettings.defaultFileTransferPort(normalizedProtocol),
+                            username = username.trim().ifBlank { if (normalizedProtocol == AppSettings.FILE_TRANSFER_SFTP) "" else "anonymous" },
+                            password = password,
+                            usePrivateKey = normalizedProtocol == AppSettings.FILE_TRANSFER_SFTP && usePrivateKey,
+                            privateKey = privateKey,
+                            passphrase = passphrase,
+                            initialPath = initialPath.ifBlank { "/" },
+                            note = note,
+                            encoding = encoding.ifBlank { "UTF-8" },
+                            passiveMode = passiveMode,
+                            explicitFtps = explicitFtps,
+                            multiThread = multiThread,
+                            syncPermissions = syncPermissions,
+                            hideAddressInDrawer = hideAddress,
+                            enabled = enabled,
+                        ),
+                    )
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+internal fun defaultFileTransferServer(protocol: String): FileTransferServerConfig {
+    val normalized = AppSettings.normalizeFileTransferProtocol(protocol)
+    return FileTransferServerConfig(
+        id = AppSettings.newId(),
+        name = normalized.uppercase(Locale.US),
+        protocol = normalized,
+        host = "",
+        port = AppSettings.defaultFileTransferPort(normalized),
+        username = if (normalized == AppSettings.FILE_TRANSFER_SFTP) "" else "anonymous",
+        password = "",
+        usePrivateKey = false,
+        privateKey = "",
+        passphrase = "",
+        initialPath = "/",
+        note = "",
+        encoding = "UTF-8",
+        passiveMode = true,
+        explicitFtps = true,
+        multiThread = true,
+        syncPermissions = false,
+        hideAddressInDrawer = false,
+        enabled = true,
+    )
+}
+
+@Composable
 internal fun MiniServerSettings(
     settings: AppSettings,
     miniServerManager: MiniServerManager,
@@ -2566,6 +2984,7 @@ internal fun BackupSettings(
     var includePrompts by rememberSaveable { mutableStateOf(true) }
     var includeSkills by rememberSaveable { mutableStateOf(true) }
     var includeWebDav by rememberSaveable { mutableStateOf(true) }
+    var includeFileTransfer by rememberSaveable { mutableStateOf(true) }
     var includeSecrets by rememberSaveable { mutableStateOf(false) }
     var selectedServerId by rememberSaveable { mutableStateOf(webDavServers.firstOrNull()?.id.orEmpty()) }
     var remotePath by rememberSaveable { mutableStateOf(DEFAULT_WEBDAV_BACKUP_PATH) }
@@ -2582,6 +3001,7 @@ internal fun BackupSettings(
         includePrompts = includePrompts,
         includeSkills = includeSkills,
         includeWebDav = includeWebDav,
+        includeFileTransfer = includeFileTransfer,
         includeSecrets = includeSecrets,
     )
 
@@ -2597,6 +3017,7 @@ internal fun BackupSettings(
         BackupIncludeRow("系统提示词", includePrompts) { includePrompts = it }
         BackupIncludeRow("Skills", includeSkills) { includeSkills = it }
         BackupIncludeRow("WebDAV 配置", includeWebDav) { includeWebDav = it }
+        BackupIncludeRow("文件传输配置", includeFileTransfer) { includeFileTransfer = it }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("包含 API Key / 密码 / 私钥", style = MaterialTheme.typography.titleSmall)
@@ -2953,7 +3374,11 @@ internal fun sshAuthLabel(authType: String): String = when (authType) {
 }
 
 @Composable
-internal fun McpSettings(settings: AppSettings, mcpClientManager: McpClientManager, externalRevision: Int = 0) {
+internal fun McpSettings(
+    settings: AppSettings,
+    mcpClientManager: McpClientManager,
+    externalRevision: Int = 0,
+) {
     val scope = rememberCoroutineScope()
     var revision by remember { mutableIntStateOf(0) }
     val servers = remember(revision, externalRevision) { settings.mcpServers() }
@@ -3097,6 +3522,123 @@ internal fun McpSettings(settings: AppSettings, mcpClientManager: McpClientManag
 }
 
 @Composable
+internal fun LocalMcpServerSettings(
+    settings: AppSettings,
+    localMcpServerManager: LocalMcpServerManager,
+    externalRevision: Int = 0,
+) {
+    var revision by remember { mutableIntStateOf(0) }
+    val localConfig = remember(revision, externalRevision) { settings.localMcpServerConfig() }
+    val localStatus = remember(revision, externalRevision) { localMcpServerManager.status() }
+    var editing by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        localMcpServerManager.syncWithSettings()
+        revision++
+    }
+
+    if (editing) {
+        LocalMcpServerDialog(
+            initial = localConfig,
+            onDismiss = { editing = false },
+            onSave = { config ->
+                settings.saveLocalMcpServerConfig(config)
+                if (config.enabled) {
+                    localMcpServerManager.start(config)
+                } else {
+                    localMcpServerManager.stop()
+                }
+                editing = false
+                status = "本机 MCP 服务端配置已保存"
+                revision++
+            },
+        )
+    }
+
+    KimiCardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Hub, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("本机作为 MCP 服务端", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "将 Lyra Code 已启用的 Agent 工具和已启用 MCP 工具暴露给其他 MCP Client。",
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = localConfig.enabled && localStatus.running,
+                onCheckedChange = { enabled ->
+                    val updated = localConfig.copy(enabled = enabled)
+                    if (enabled) {
+                        localMcpServerManager.start(updated)
+                    } else {
+                        settings.saveLocalMcpServerConfig(updated)
+                        localMcpServerManager.stop()
+                    }
+                    revision++
+                },
+            )
+        }
+        KimiDivider()
+        Text(
+            "状态：${if (localStatus.running) "运行中" else "已停止"} · ${localStatus.message}",
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text("本地地址：${localStatus.url}", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+        if (localStatus.lanUrls.isNotEmpty()) {
+            Text(
+                "局域网地址：${localStatus.lanUrls.joinToString("  ")}",
+                color = KimiMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Text(
+            if (localConfig.authKey.isBlank()) "认证：未设置 key，局域网或公网暴露时不安全。" else "认证：已启用 Authorization Bearer / X-Lyra-MCP-Key",
+            color = if (localConfig.authKey.isBlank()) MaterialTheme.colorScheme.error else KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (status.isNotBlank()) {
+            Text(status, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { editing = true }, shape = KimiPillShape) {
+                Icon(Icons.Default.Settings, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("配置")
+            }
+            OutlinedButton(
+                onClick = {
+                    if (localStatus.running) {
+                        localMcpServerManager.stop()
+                    }
+                    localMcpServerManager.start(localConfig.copy(enabled = true))
+                    status = "本机 MCP 服务端已重启"
+                    revision++
+                },
+                shape = KimiPillShape,
+            ) {
+                Icon(Icons.Default.RestartAlt, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("重启")
+            }
+        }
+    }
+
+    KimiCardBox {
+        Text("外部调用说明", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "外部 MCP Client 调用工具时，Lyra Code 默认不再弹出二次确认。请在外部 MCP Client 中配置是否需要用户确认，并避免把未设置认证 Key 的服务暴露到不可信网络。",
+            color = KimiMuted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
 internal fun McpToolSummaryRow(tool: McpToolDefinition) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(tool.name, style = MaterialTheme.typography.titleSmall)
@@ -3108,6 +3650,81 @@ internal fun McpToolSummaryRow(tool: McpToolDefinition) {
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+@Composable
+internal fun LocalMcpServerDialog(
+    initial: LocalMcpServerConfig,
+    onDismiss: () -> Unit,
+    onSave: (LocalMcpServerConfig) -> Unit,
+) {
+    var host by rememberSaveable { mutableStateOf(initial.host.ifBlank { AppSettings.DEFAULT_LOCAL_MCP_SERVER_HOST }) }
+    var port by rememberSaveable { mutableStateOf(initial.port.toString()) }
+    var authKey by rememberSaveable { mutableStateOf(initial.authKey) }
+    var enabled by rememberSaveable { mutableStateOf(initial.enabled) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("本机 MCP 服务端") },
+        text = {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "其他 MCP Client 可通过 http://主机:端口/mcp 连接。若监听局域网或公网，建议设置认证 Key。",
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("监听主机") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { port = it.filter(Char::isDigit).take(5) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("端口") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = authKey,
+                    onValueChange = { authKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("认证 Key，可空") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                )
+                if (authKey.isBlank()) {
+                    Text("未设置认证 Key 时，同网络内能访问该端口的客户端都可请求工具调用。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("保存后立即启用", modifier = Modifier.weight(1f))
+                    Switch(checked = enabled, onCheckedChange = { enabled = it })
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        LocalMcpServerConfig(
+                            host = host.trim().ifBlank { AppSettings.DEFAULT_LOCAL_MCP_SERVER_HOST },
+                            port = port.toIntOrNull()?.coerceIn(1, 65535) ?: AppSettings.DEFAULT_LOCAL_MCP_SERVER_PORT,
+                            authKey = authKey.trim(),
+                            enabled = enabled,
+                        ),
+                    )
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -3384,6 +4001,11 @@ internal fun agentToolCatalog(): List<AgentToolInfo> = listOf(
     AgentToolInfo("webdav_search", "WebDAV 搜索", "搜索 WebDAV 服务器上的文件路径。"),
     AgentToolInfo("webdav_download_to_workspace", "WebDAV 下载", "从 WebDAV 下载文件到工作区，执行前需要用户确认。"),
     AgentToolInfo("webdav_upload_from_workspace", "WebDAV 上传", "把工作区文件上传到 WebDAV，执行前需要用户确认。"),
+    AgentToolInfo("list_file_transfer_servers", "列出文件传输服务器", "查看用户已配置且启用的 FTP/FTPS/SFTP 服务器标识。"),
+    AgentToolInfo("file_transfer_list", "文件传输列目录", "列出 FTP/FTPS/SFTP 目录文件详情。"),
+    AgentToolInfo("file_transfer_search", "文件传输搜索", "搜索 FTP/FTPS/SFTP 服务器上的文件路径。"),
+    AgentToolInfo("file_transfer_download_to_workspace", "文件传输下载", "从 FTP/FTPS/SFTP 下载文件到工作区，执行前需要用户确认。"),
+    AgentToolInfo("file_transfer_upload_from_workspace", "文件传输上传", "把工作区文件上传到 FTP/FTPS/SFTP，执行前需要用户确认。"),
     AgentToolInfo("export_backup", "导出备份", "导出 Lyra Code 数据到本地或 WebDAV，执行前需要用户确认。"),
     AgentToolInfo("import_backup", "导入备份", "从本地或 WebDAV 用补充模式导入备份，执行前需要用户确认。"),
     AgentToolInfo("set_todo_list", "设置 TODO", "展示 Agent 当前任务计划。"),
@@ -3601,7 +4223,11 @@ internal fun OpenSourceLicensesScreen() {
 }
 
 @Composable
-internal fun AboutSoftwareScreen(onOpenDeviceInfo: () -> Unit) {
+internal fun AboutSoftwareScreen(
+    updateAvailable: Boolean,
+    onUpdateAvailabilityChange: (Boolean) -> Unit,
+    onOpenDeviceInfo: () -> Unit,
+) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
@@ -3660,8 +4286,12 @@ internal fun AboutSoftwareScreen(onOpenDeviceInfo: () -> Unit) {
             result.fold(
                 onSuccess = { info ->
                     if (info == null) {
+                        updateManager.clearLatestAvailableUpdate()
+                        onUpdateAvailabilityChange(false)
                         notice = "当前已是最新版本"
                     } else {
+                        updateManager.saveLatestAvailableUpdate(info)
+                        onUpdateAvailabilityChange(true)
                         notice = ""
                         updateInfo = info
                     }
@@ -3731,10 +4361,10 @@ internal fun AboutSoftwareScreen(onOpenDeviceInfo: () -> Unit) {
             }
             KimiSectionLabel("版本与更新")
             KimiCardBox {
-                KimiMenuRow(
-                    Icons.Default.SystemUpdate,
-                    "版本 $versionName ($versionCode)",
-                    if (checking) "正在检查更新..." else "点击检测新版本",
+                AboutVersionRow(
+                    versionText = "版本 $versionName ($versionCode)",
+                    value = if (checking) "正在检查更新..." else if (updateAvailable) "发现新版本，点击查看" else "点击检测新版本",
+                    updateAvailable = updateAvailable,
                     onClick = ::checkUpdate,
                 )
                 pendingApk?.let { apk ->
@@ -3878,6 +4508,48 @@ internal fun DeviceInfoRow(item: DeviceInfoItem) {
             color = KimiMuted,
             style = MaterialTheme.typography.bodyMedium,
         )
+    }
+}
+
+@Composable
+internal fun AboutVersionRow(
+    versionText: String,
+    value: String,
+    updateAvailable: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(42.dp), contentAlignment = Alignment.CenterStart) {
+            Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(versionText, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (updateAvailable) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error),
+                    )
+                }
+            }
+            Text(
+                value,
+                color = if (updateAvailable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
     }
 }
 

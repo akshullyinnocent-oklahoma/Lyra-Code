@@ -15,14 +15,15 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.5.0-blue" />
+  <img alt="Version" src="https://img.shields.io/badge/version-2.6.0-blue" />
   <img alt="Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/license-Dual%20License%20%2F%20AGPLv3-orange" />
-  <img alt="MCP" src="https://img.shields.io/badge/MCP-HTTP%20%2F%20SSE-purple" />
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-Client%20%2F%20Server-purple" />
+  <img alt="File Transfer" src="https://img.shields.io/badge/File%20Transfer-WebDAV%20%2F%20FTP%20%2F%20SFTP-0A84FF" />
 </p>
 
-Lyra Code is an Android-first local AI Agent app. It brings model chat, file tools, native downloads, command execution, web search, MCP, SSH, WebDAV, a built-in mini server, backups, Skills, device diagnostics, and usage statistics into a mobile workflow, so an Android device can handle coding, writing, research, remote maintenance, local web debugging, and automation tasks.
+Lyra Code is an Android-first local AI Agent app. It brings model chat, file tools, native downloads, command execution, web search, MCP client/server support, SSH, WebDAV, FTP/FTPS/SFTP, a built-in mini server, backups, Skills, device diagnostics, and usage statistics into a mobile workflow.
 
 ## Screenshots
 
@@ -34,46 +35,42 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 
 ### Model Providers
 
-- OpenAI Chat Completions-compatible APIs.
-- Anthropic Messages API.
-- Gemini GenerateContent API.
-- Multiple providers, API keys, base URLs, and saved models.
-- Fast provider/model/system-prompt/reasoning-depth switching during chat.
+- OpenAI Chat Completions-compatible APIs, Anthropic Messages API, and Gemini GenerateContent API.
+- Multiple providers, API keys, base URLs, saved models, custom system prompts, and reasoning-depth presets.
+- Fast provider/model/prompt switching from the chat action panel.
 - HTTP API URLs are supported with an explicit security warning.
 
 ### Agent Tools
 
-- File read, write, append, rename, move, delete, directory creation, and global file search.
-- Native HTTP/HTTPS file downloads to the workspace or Android shared storage, with redirects, custom headers, timeouts, and optional SHA-256 verification.
-- Command execution through Termux RunCommandService with stdout/stderr feedback; command review now blocks only high-risk blacklist patterns instead of rejecting private commands or newly installed tools that are not on a fixed allowlist.
+- Workspace/global file operations, file search, code editing, and change review.
+- Native HTTP/HTTPS downloads with redirects, headers, progress, and optional SHA-256 verification.
+- Command execution through Termux RunCommandService with stdout/stderr feedback; only obvious high-risk blacklist patterns are blocked.
 - TODO planning, process records, file-change review, and diff visualization.
 - Web search, web page reading, source annotation, and a configurable domain blacklist to avoid unwanted, spammy, or low-quality sources.
-- Time awareness, location awareness, and configuration management.
-- Multi-round tool loops with user review, approval, and per-session confirmation bypass.
-- Native downloads are preferred; Termux `curl` / `wget` are retained only as fallback options.
+- Time/location awareness, configuration management, background tasks, and scheduled tasks.
 
-### Device and System Tools
+### Device and System
 
 - Device information page covering manufacturer, model, Android version, CPU/hardware, ABI, memory, storage, display, network, Bluetooth, and battery state.
 - Hardware inspection Agent for device diagnostics, troubleshooting, and hardware comparison.
-- Installed-app recognition with app name, package name, version, size, category, and signing certificate SHA-256.
-- Optional Shizuku Shell and Root command tools with configurable `su` commands, permission fallback, full command preview, and explicit user approval.
-- System-level tools can be disabled independently from the Agent settings page.
+- Installed-app recognition, optional Shizuku Shell, and optional Root command tools.
+- System-level tools can be disabled independently.
 
-### MCP / SSH / WebDAV
+### Remote Integrations
 
-- MCP: remote MCP servers over Streamable HTTP or SSE.
+- MCP Client: connect to remote MCP servers over Streamable HTTP or SSE.
+- MCP Server: expose Lyra Code's enabled local tools and connected MCP tools to other MCP clients over local/LAN HTTP, with configurable port and optional auth key.
 - SSH: password/key login for Linux, Windows, and Git servers, with user-approved command execution.
 - WebDAV: file listing, PROPFIND, search, upload, download, and cloud backup.
-- Natural-language configuration management for MCP, SSH, WebDAV, Skills, and Agent tools.
+- FTP / FTPS / SFTP: add storage servers, list directories, search files, upload, and download through AI tools or manual configuration.
+- Natural-language configuration management for MCP, SSH, WebDAV, FTP/FTPS/SFTP, Skills, and Agent tools.
 
 ### Mini Server
 
 - Built-in local HTTP/HTTPS static file server for previewing and debugging local websites, documentation sites, and generated front-end projects.
 - Configurable host, port, password authentication, custom domains, HTTPS certificate chain/private key, and force-HTTPS mode.
-- Works with localhost, LAN, intranet tunneling, public access, and mDNS-style local discovery scenarios when the network environment allows it.
-- Terminal-style live logs for connections, resource loading, 404/auth failures, and page JavaScript errors; the Agent can read these logs to help diagnose and fix local web issues.
-- The Agent can start or stop the mini server after user approval.
+- Terminal-style live logs for connections, resource loading, 404/auth failures, and page JavaScript errors.
+- The Agent can start/stop the mini server and inspect logs after user approval.
 
 ### Skills
 
@@ -86,7 +83,7 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 
 - Image upload, photo capture, cropping, rotation, brush annotation, and mosaic annotation.
 - Thumbnail preview, full-screen preview, and save support for user/AI images and videos.
-- Markdown, tables, code blocks, LaTeX math, and media Data URL rendering.
+- Markdown, tables, syntax-highlighted code blocks, LaTeX math, and media Data URL rendering.
 - Preview and save AI-returned base64 media, remote URLs, and local media files.
 
 ### Theme and Display
@@ -98,14 +95,13 @@ Lyra Code is an Android-first local AI Agent app. It brings model chat, file too
 
 ### Data and Backup
 
-- Export/import profile data, conversation history, model providers, MCP, SSH, WebDAV, system prompts, Skills, and immersive roleplay scenarios.
-- Local zip backup and WebDAV cloud backup.
-- Supplement import mode with deduplication to reduce the risk of overwriting existing secrets.
+- Export/import profile data, conversations, model providers, MCP, SSH, WebDAV, FTP/FTPS/SFTP, system prompts, Skills, and immersive roleplay scenarios.
+- Local zip backup and WebDAV cloud backup, with supplement import mode and deduplication.
 - Safe export without API keys, or full migration export with secrets included.
 
 ### Usage Statistics
 
-- Counts conversations, messages, user-input tokens, and AI-output tokens, including reasoning and tool context.
+- Counts conversations, messages, user-input tokens, and AI-output tokens, including reasoning, tool context, file reads, command output, and repeated context.
 - Offline token estimation without a network dependency.
 - Daily, weekly, monthly, yearly, total, and historical date-range views.
 
@@ -159,13 +155,13 @@ Then grant the Termux communication permission in Lyra Code settings. If permiss
 
 ## Security Notes
 
-Lyra Code may handle API keys, SSH passwords/private keys, MCP tokens, WebDAV passwords, conversations, local files, and remote server output. Please note:
+Lyra Code may handle API keys, SSH passwords/private keys, MCP tokens, WebDAV/FTP credentials, conversations, local files, and remote server output. Please note:
 
-- HTTP API, MCP, WebDAV, and mini server endpoints are insecure unless protected by HTTPS or a trusted network.
+- HTTP API, MCP, WebDAV, FTP, and mini server endpoints are insecure unless protected by HTTPS/TLS or a trusted network.
 - Exposing the mini server to LAN, tunneling, or public networks may leak local files if the served directory, authentication, or HTTPS configuration is wrong. Review the workspace and password before enabling external access.
 - Review tool calls before allowing AI to execute commands, edit files, upload/download files, or operate remote servers.
 - `run_command` no longer uses a fixed command allowlist, but it still blocks obvious high-risk operations such as `rm -rf /`, writes to `/dev/block`, and filesystem formatting commands. Review commands before approving them.
-- The web search blacklist is stored locally. Add domains such as `x.com`, `https://x.com`, or `https://x.com/` in Settings to prevent the Agent from searching or reading those domains and their subdomains.
+- The web search blacklist is stored locally. Plain domains are exact matches: `x.com` blocks only `x.com`, while `www.x.com` must be added separately. Use wildcard rules such as `*.x.com` to block subdomains; add both `x.com` and `*.x.com` when you want to block the root domain and all subdomains.
 - Backup files containing secrets must be stored carefully and must not be shared publicly.
 - This project does not verify that remote scripts, MCP servers, Skill repositories, or SSH commands are trustworthy.
 

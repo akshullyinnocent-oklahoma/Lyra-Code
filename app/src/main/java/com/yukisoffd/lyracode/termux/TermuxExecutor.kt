@@ -22,9 +22,8 @@ class TermuxExecutor(
 ) {
     suspend fun execute(command: String, workDir: String? = null, timeoutSeconds: Int = DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS): TermuxResult = withContext(Dispatchers.IO) {
         val normalizedCommand = normalizeShellRedirection(command)
-        val validation = CommandGuard.validate(normalizedCommand)
-        if (validation.isFailure) {
-            return@withContext TermuxResult(false, validation.exceptionOrNull()?.message ?: "命令被拒绝")
+        validateCommand(normalizedCommand)?.let { reason ->
+            return@withContext TermuxResult(false, reason)
         }
         if (!isPackageInstalled(PACKAGE_TERMUX)) {
             return@withContext TermuxResult(false, "未检测到 Termux，请先安装 Termux 并开启 allow-external-apps。")
@@ -150,6 +149,18 @@ class TermuxExecutor(
         }
     }
 
+    private fun validateCommand(command: String): String? {
+        val trimmed = command.trim()
+        if (trimmed.isBlank()) return "命令不能为空"
+        val dangerous = DANGEROUS_COMMAND_PATTERNS.firstOrNull { it.containsMatchIn(trimmed) }
+        if (dangerous != null) return "命令包含高风险操作，已拦截"
+        if (trimmed.replace(Regex("""\s+"""), "").contains(":(){:|:&};:")) {
+            return "命令包含高风险操作，已拦截"
+        }
+        if (ROOT_COMMAND_PATTERN.containsMatchIn(trimmed)) return "Root 命令需要使用 execute_root_command 单独授权"
+        return null
+    }
+
     @Suppress("DEPRECATION")
     private fun isPackageInstalled(packageName: String): Boolean = runCatching {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -168,6 +179,15 @@ class TermuxExecutor(
         private const val MAX_COMMAND_RESULT_TIMEOUT_SECONDS = 600
         internal const val ACTION_TERMUX_COMMAND_RESULT = "com.yukisoffd.lyracode.termux.COMMAND_RESULT"
         private val nextExecutionId = AtomicInteger(1000)
+        private val ROOT_COMMAND_PATTERN = Regex("""(?i)^\s*su(?:\s|$)""")
+        private val DANGEROUS_COMMAND_PATTERNS = listOf(
+            Regex("""(?i)(^|[;&|]\s*)rm\s+(?=[^;&|]*\s/)(?=[^;&|]*(?:-[^\s;&|]*r|--recursive))(?=[^;&|]*(?:-[^\s;&|]*f|--force))[^;&|]*\s/(?:\s|$|[;&|*])"""),
+            Regex("""(?i)>\s*/dev/block/"""),
+            Regex("""(?i)(^|[;&|]\s*)dd\s+.*\bof=/dev/(block|mmcblk|sda|vda)"""),
+            Regex("""(?i)(^|[;&|]\s*)mkfs(?:\.[a-z0-9]+)?\b"""),
+            Regex("""(?i)(^|[;&|]\s*)chmod\s+-?R?\s*777\s+/(?:\s|$|[;&|*])"""),
+            Regex("""(?i)(^|[;&|]\s*)chown\s+-R\s+\S+\s+/(?:\s|$|[;&|*])"""),
+        )
     }
 }
 

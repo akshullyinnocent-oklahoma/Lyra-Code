@@ -449,11 +449,15 @@ class WebViewWebAgent(
     private fun blockedHostFor(url: String): String? {
         val host = runCatching { Uri.parse(url).host.orEmpty() }.getOrDefault("")
             .lowercase()
-            .removePrefix("www.")
             .trim('.')
         if (host.isBlank()) return null
         return settings.webSearchBlockedHosts().firstOrNull { blocked ->
-            host == blocked || host.endsWith(".$blocked")
+            if (blocked.startsWith("*.")) {
+                val suffix = blocked.removePrefix("*.").trim('.')
+                suffix.isNotBlank() && host != suffix && host.endsWith(".$suffix")
+            } else {
+                host == blocked
+            }
         }
     }
 
