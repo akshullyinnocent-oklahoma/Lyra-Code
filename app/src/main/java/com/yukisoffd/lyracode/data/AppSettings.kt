@@ -124,6 +124,7 @@ data class MiniServerConfig(
     val protocol: String,
     val host: String,
     val port: Int,
+    val username: String,
     val password: String,
     val customDomains: List<String>,
     val forceHttps: Boolean,
@@ -1297,6 +1298,7 @@ class AppSettings(context: Context) {
             saveMiniServerConfig(
                 if (supplement) {
                     imported.copy(
+                        username = imported.username.ifBlank { current.username },
                         password = imported.password.ifBlank { current.password },
                         tlsKeyStoreBase64 = imported.tlsKeyStoreBase64.ifBlank { current.tlsKeyStoreBase64 },
                         tlsKeyStorePassword = imported.tlsKeyStorePassword.ifBlank { current.tlsKeyStorePassword },
@@ -1375,6 +1377,7 @@ class AppSettings(context: Context) {
         protocol = MINI_SERVER_PROTOCOL_HTTP,
         host = DEFAULT_MINI_SERVER_HOST,
         port = DEFAULT_MINI_SERVER_PORT,
+        username = DEFAULT_MINI_SERVER_USERNAME,
         password = "",
         customDomains = emptyList(),
         forceHttps = false,
@@ -1418,6 +1421,7 @@ class AppSettings(context: Context) {
             .put("protocol", config.protocol)
             .put("host", config.host)
             .put("port", config.port)
+            .put("username", config.username)
             .put("password", if (includeSecrets) config.password else "")
             .put("customDomains", JSONArray(config.customDomains))
             .put("forceHttps", config.forceHttps)
@@ -1440,6 +1444,7 @@ class AppSettings(context: Context) {
             protocol = protocol,
             host = item.optString("host").ifBlank { DEFAULT_MINI_SERVER_HOST },
             port = item.optInt("port", DEFAULT_MINI_SERVER_PORT).coerceIn(1, 65535),
+            username = item.optString("username").ifBlank { DEFAULT_MINI_SERVER_USERNAME },
             password = item.optString("password"),
             customDomains = parseMiniServerDomains(item),
             forceHttps = item.optBoolean("forceHttps", false),
@@ -1858,6 +1863,7 @@ class AppSettings(context: Context) {
         const val MINI_SERVER_PROTOCOL_HTTPS = "https"
         const val DEFAULT_MINI_SERVER_HOST = "127.0.0.1"
         const val DEFAULT_MINI_SERVER_PORT = 8787
+        const val DEFAULT_MINI_SERVER_USERNAME = "lyra"
         const val DEFAULT_MINI_SERVER_MDNS_NAME = "Lyra Code"
         const val REASONING_AUTO = "auto"
         const val REASONING_LOW = "low"

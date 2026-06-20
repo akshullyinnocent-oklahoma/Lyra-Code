@@ -1534,7 +1534,7 @@ internal fun ImageCropUploadDialog(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 28.dp),
+                    .padding(bottom = 52.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

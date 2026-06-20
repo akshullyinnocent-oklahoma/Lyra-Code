@@ -1861,6 +1861,7 @@ internal fun MessageCard(
 ) {
     val visibleContent = displayMessageContent(message)
     val mediaPreviews = remember(message.content) { uploadedMediaPreviews(message.content) }
+    val filePreviews = remember(message.content) { uploadedFilePreviews(message.content) }
     val container = when (message.role) {
         "user" -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
         "tool" -> MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
@@ -1878,6 +1879,10 @@ internal fun MessageCard(
     var editDialogOpen by rememberSaveable(message.id) { mutableStateOf(false) }
     var editText by rememberSaveable(message.id) { mutableStateOf(message.content) }
     val isUser = message.role == "user"
+    val shouldRenderBubble = !isUser ||
+        visibleContent.isNotBlank() ||
+        mediaPreviews.isNotEmpty() ||
+        message.thinking.isNotBlank()
     if (editDialogOpen) {
         AlertDialog(
             onDismissRequest = { editDialogOpen = false },
@@ -1909,136 +1914,146 @@ internal fun MessageCard(
         )
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Box {
-            val cardModifier = if (isUser) {
-                Modifier
-                    .widthIn(max = 320.dp)
-                    .combinedClickable(
-                        onClick = {},
-                        onLongClick = {
-                            editText = message.content
-                            menuExpanded = true
-                        },
-                    )
-            } else {
-                Modifier.fillMaxWidth()
+        Column(
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isUser && filePreviews.isNotEmpty()) {
+                UploadedFileCardColumn(filePreviews)
             }
-            Card(
-                colors = CardDefaults.cardColors(containerColor = container),
-                shape = if (isUser) RoundedCornerShape(22.dp) else RoundedCornerShape(18.dp),
-                border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
-                modifier = cardModifier,
-            ) {
-                Column(
-                    Modifier.padding(
-                        horizontal = if (isUser) 16.dp else 6.dp,
-                        vertical = if (isUser) 9.dp else 6.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (!isUser && message.role != "assistant") {
-                        Text("工具结果", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
-                    }
-                    if (message.thinking.isNotBlank()) {
-                        CollapsedStatusLine(
-                            text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
-                            expanded = showThinking,
-                            onClick = { showThinking = !showThinking },
-                        )
-                        AnimatedVisibility(showThinking) {
-                            key(selectionResetKey) {
-                                SelectionContainer {
-                                    Text(
-                                        message.thinking,
-                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = contentColor,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (message.role == "tool") {
-                        ToolResultContent(
-                            content = message.content,
-                            expanded = showToolResult,
-                            onToggle = { showToolResult = !showToolResult },
-                        )
+            if (shouldRenderBubble) {
+                Box {
+                    val cardModifier = if (isUser) {
+                        Modifier
+                            .widthIn(max = 320.dp)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    editText = message.content
+                                    menuExpanded = true
+                                },
+                            )
                     } else {
-                        if (isUser && mediaPreviews.isNotEmpty()) {
-                            UploadedMediaGrid(mediaPreviews)
-                        }
-                        if (visibleContent.isNotBlank()) {
-                            key(selectionResetKey) {
-                                if (isUser) {
-                                    if (selectable) {
+                        Modifier.fillMaxWidth()
+                    }
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = container),
+                        shape = if (isUser) RoundedCornerShape(22.dp) else RoundedCornerShape(18.dp),
+                        border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
+                        modifier = cardModifier,
+                    ) {
+                        Column(
+                            Modifier.padding(
+                                horizontal = if (isUser) 16.dp else 6.dp,
+                                vertical = if (isUser) 9.dp else 6.dp,
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (!isUser && message.role != "assistant") {
+                                Text("工具结果", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+                            }
+                            if (message.thinking.isNotBlank()) {
+                                CollapsedStatusLine(
+                                    text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
+                                    expanded = showThinking,
+                                    onClick = { showThinking = !showThinking },
+                                )
+                                AnimatedVisibility(showThinking) {
+                                    key(selectionResetKey) {
                                         SelectionContainer {
-                                            Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                            Text(
+                                                message.thinking,
+                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                                color = contentColor,
+                                            )
                                         }
-                                    } else {
-                                        Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
-                                    }
-                                } else {
-                                    SelectionContainer {
-                                        RichMarkdownContent(visibleContent)
                                     }
                                 }
                             }
-                            if (message.role == "assistant" && !inProcessRecord) {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    IconButton(
-                                        onClick = { clipboard.setText(AnnotatedString(message.content)) },
-                                        modifier = Modifier.size(36.dp),
-                                    ) {
-                                        Icon(
-                                            Icons.Default.ContentCopy,
-                                            contentDescription = "复制",
-                                            tint = KimiMuted,
-                                            modifier = Modifier.size(20.dp),
-                                        )
+                            if (message.role == "tool") {
+                                ToolResultContent(
+                                    content = message.content,
+                                    expanded = showToolResult,
+                                    onToggle = { showToolResult = !showToolResult },
+                                )
+                            } else {
+                                if (isUser && mediaPreviews.isNotEmpty()) {
+                                    UploadedMediaGrid(mediaPreviews)
+                                }
+                                if (visibleContent.isNotBlank()) {
+                                    key(selectionResetKey) {
+                                        if (isUser) {
+                                            if (selectable) {
+                                                SelectionContainer {
+                                                    Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                                }
+                                            } else {
+                                                Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                            }
+                                        } else {
+                                            SelectionContainer {
+                                                RichMarkdownContent(visibleContent)
+                                            }
+                                        }
                                     }
+                                    if (message.role == "assistant" && !inProcessRecord) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                            IconButton(
+                                                onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                                                modifier = Modifier.size(36.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.ContentCopy,
+                                                    contentDescription = "复制",
+                                                    tint = KimiMuted,
+                                                    modifier = Modifier.size(20.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (message.role == "assistant" && !inProcessRecord) {
+                                    Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
-                        } else if (message.role == "assistant" && !inProcessRecord) {
-                            Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                }
-            }
-            if (isUser) DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                DropdownMenuItem(
-                    text = { Text("复制") },
-                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
-                    onClick = {
-                        clipboard.setText(AnnotatedString(message.content))
-                        menuExpanded = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("选择文本") },
-                    leadingIcon = { Icon(Icons.Default.TextFields, contentDescription = null) },
-                    onClick = {
-                        selectable = true
-                        menuExpanded = false
-                    },
-                )
-                if (isUser && onEditAndRegenerate != null) {
-                    DropdownMenuItem(
-                        text = { Text("修改并重新生成") },
-                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                        onClick = {
-                            editText = message.content
-                            menuExpanded = false
-                            editDialogOpen = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("重新生成") },
-                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onEditAndRegenerate(message.id, message.content)
-                        },
-                    )
+                    if (isUser) DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("复制") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                            onClick = {
+                                clipboard.setText(AnnotatedString(message.content))
+                                menuExpanded = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("选择文本") },
+                            leadingIcon = { Icon(Icons.Default.TextFields, contentDescription = null) },
+                            onClick = {
+                                selectable = true
+                                menuExpanded = false
+                            },
+                        )
+                        if (isUser && onEditAndRegenerate != null) {
+                            DropdownMenuItem(
+                                text = { Text("修改并重新生成") },
+                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                onClick = {
+                                    editText = message.content
+                                    menuExpanded = false
+                                    editDialogOpen = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("重新生成") },
+                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onEditAndRegenerate(message.id, message.content)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2101,6 +2116,74 @@ internal data class UploadedMediaPreview(
     val uri: String,
 )
 
+internal data class UploadedFilePreview(
+    val name: String,
+    val sizeBytes: Long?,
+    val type: String,
+)
+
+@Composable
+internal fun UploadedFileCardColumn(files: List<UploadedFilePreview>) {
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        files.forEach { file ->
+            UploadedFileCard(file)
+        }
+    }
+}
+
+@Composable
+internal fun UploadedFileCard(file: UploadedFilePreview) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+        modifier = Modifier.widthIn(max = 320.dp),
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(58.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+            Column(Modifier.widthIn(min = 150.dp, max = 220.dp)) {
+                Text(
+                    file.name,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val meta = listOf(file.type, formatUploadedFileSize(file.sizeBytes))
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · ")
+                Text(
+                    meta,
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 internal fun UploadedMediaGrid(media: List<UploadedMediaPreview>) {
     Row(
@@ -2131,25 +2214,21 @@ internal fun uploadedMediaPreviews(content: String): List<UploadedMediaPreview> 
     }.toList()
 }
 
+internal fun uploadedFilePreviews(content: String): List<UploadedFilePreview> {
+    val regex = Regex("用户上传文件：([^\\n]+)\\n大小：(\\d+) bytes", RegexOption.MULTILINE)
+    return regex.findAll(content).map {
+        val name = it.groupValues[1].trim().ifBlank { "未命名文件" }
+        UploadedFilePreview(
+            name = name,
+            sizeBytes = it.groupValues[2].toLongOrNull(),
+            type = uploadedFileTypeLabel(name),
+        )
+    }.toList()
+}
+
 internal fun displayMessageContent(message: ChatRecord): String {
     if (message.role != "user") return message.content
-    val withoutMedia = stripUploadedMediaBlocks(message.content)
-    if (!withoutMedia.contains("用户上传文件：")) return withoutMedia
-    val marker = "用户上传文件："
-    val textPart = withoutMedia.substringBefore(marker).trim()
-    val fileNames = withoutMedia.lineSequence()
-        .map { it.trim() }
-        .filter { it.startsWith(marker) }
-        .map { it.removePrefix(marker).trim().ifBlank { "未命名文件" } }
-        .toList()
-    return buildString {
-        if (textPart.isNotBlank()) {
-            append(textPart)
-            append("\n\n")
-        }
-        append("已上传文件：")
-        append(fileNames.joinToString("、"))
-    }
+    return stripUploadedFileBlocks(stripUploadedMediaBlocks(message.content)).trim()
 }
 
 internal fun stripUploadedMediaBlocks(content: String): String {
@@ -2237,6 +2316,43 @@ internal data class FileChangeView(
 
 internal fun fileNameForDisplay(path: String): String {
     return path.trim().replace('\\', '/').substringAfterLast('/').ifBlank { path.ifBlank { "未命名文件" } }
+}
+
+internal fun stripUploadedFileBlocks(content: String): String {
+    return content
+        .replace(
+            Regex("\\n*用户上传文件：[^\\n]+\\n大小：\\d+ bytes\\n\\n```text\\n[\\s\\S]*?\\n```\\n?"),
+            "\n",
+        )
+        .replace(Regex("\\n*用户上传文件：[^\\n]+\\n大小：\\d+ bytes\\n?"), "\n")
+        .trim()
+}
+
+internal fun uploadedFileTypeLabel(name: String): String {
+    val ext = name.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    return when (ext) {
+        "" -> "文件"
+        "txt", "md", "json", "xml", "csv", "log" -> ext.uppercase() + " 文本"
+        "kt", "java", "py", "js", "ts", "html", "css", "go", "rs", "cpp", "c", "h" -> ext.uppercase() + " 代码"
+        "zip", "7z", "rar", "tar", "gz" -> ext.uppercase() + " 压缩包"
+        "pdf" -> "PDF 文档"
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx" -> ext.uppercase() + " 文档"
+        else -> ext.uppercase() + " 文件"
+    }
+}
+
+internal fun formatUploadedFileSize(bytes: Long?): String {
+    val value = bytes ?: return ""
+    if (value < 1024L) return "${value}B"
+    val units = listOf("KB", "MB", "GB", "TB")
+    var size = value.toDouble()
+    var unitIndex = -1
+    do {
+        size /= 1024.0
+        unitIndex++
+    } while (size >= 1024.0 && unitIndex < units.lastIndex)
+    val text = if (size >= 10.0) "%.0f".format(size) else "%.1f".format(size)
+    return "$text${units[unitIndex]}"
 }
 
 @Composable

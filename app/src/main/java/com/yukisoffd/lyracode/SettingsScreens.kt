@@ -2539,6 +2539,7 @@ internal fun MiniServerSettings(
     var protocol by remember(savedConfig) { mutableStateOf(savedConfig.protocol) }
     var host by remember(savedConfig) { mutableStateOf(savedConfig.host) }
     var portText by remember(savedConfig) { mutableStateOf(savedConfig.port.toString()) }
+    var username by remember(savedConfig) { mutableStateOf(savedConfig.username.ifBlank { AppSettings.DEFAULT_MINI_SERVER_USERNAME }) }
     var password by remember(savedConfig) { mutableStateOf(savedConfig.password) }
     var customDomainsText by remember(savedConfig) { mutableStateOf(savedConfig.customDomains.joinToString("\n")) }
     var forceHttps by remember(savedConfig) { mutableStateOf(savedConfig.forceHttps) }
@@ -2609,6 +2610,7 @@ internal fun MiniServerSettings(
             protocol = if (protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTPS) AppSettings.MINI_SERVER_PROTOCOL_HTTPS else AppSettings.MINI_SERVER_PROTOCOL_HTTP,
             host = host.trim().ifBlank { AppSettings.DEFAULT_MINI_SERVER_HOST },
             port = portText.toIntOrNull()?.coerceIn(1, 65535) ?: AppSettings.DEFAULT_MINI_SERVER_PORT,
+            username = username.trim().ifBlank { AppSettings.DEFAULT_MINI_SERVER_USERNAME },
             password = password,
             customDomains = customDomainsText.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.distinct().toList(),
             forceHttps = forceHttps,
@@ -2686,6 +2688,7 @@ internal fun MiniServerSettings(
         OutlinedTextField(value = host, onValueChange = { host = it }, modifier = Modifier.fillMaxWidth(), label = { Text("监听主机") }, singleLine = true)
         Text("127.0.0.1 仅本机访问；0.0.0.0 可被局域网、内网穿透或公网映射访问。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(value = portText, onValueChange = { portText = it.filter(Char::isDigit).take(5) }, modifier = Modifier.fillMaxWidth(), label = { Text("端口") }, singleLine = true)
+        OutlinedTextField(value = username, onValueChange = { username = it }, modifier = Modifier.fillMaxWidth(), label = { Text("访问用户名") }, singleLine = true)
         OutlinedTextField(value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(), label = { Text("访问密码，可空") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
         OutlinedTextField(
             value = customDomainsText,
@@ -2696,7 +2699,7 @@ internal fun MiniServerSettings(
         )
         WebDavSwitchRow("强制 HTTPS 连接", "HTTP 访问会返回 308 跳转到 HTTPS；适合反向代理或同端口 HTTPS 调试。", forceHttps) { forceHttps = it }
         if (host.trim() == "0.0.0.0" || password.isBlank()) {
-            Text("安全提示：面向局域网或公网映射时建议设置密码；HTTP 明文会暴露访问内容和密码。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Text("安全提示：面向局域网或公网映射时建议设置用户名和密码；HTTP 明文会暴露访问内容和账号密码。", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
     }
 
@@ -4161,7 +4164,8 @@ internal fun OpenSourceLicensesScreen() {
             Surface(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(18.dp),
+                    .navigationBarsPadding()
+                    .padding(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 34.dp),
                 shape = RoundedCornerShape(28.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 6.dp,
@@ -4180,7 +4184,10 @@ internal fun OpenSourceLicensesScreen() {
                     SelectionContainer {
                         Text(
                             notice.licenseText,
-                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(bottom = 18.dp),
                             color = MaterialTheme.colorScheme.onSurface,
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,

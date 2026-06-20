@@ -2401,6 +2401,7 @@ class OpenAiAgent(
             },
             host = args.optString("host").ifBlank { current.host },
             port = if (args.has("port")) args.optInt("port", current.port).coerceIn(1, 65535) else current.port,
+            username = args.optString("username").ifBlank { current.username },
             password = if (args.has("password")) args.optString("password") else current.password,
             customDomains = miniServerDomains(args, current.customDomains),
             forceHttps = if (args.has("force_https")) args.optBoolean("force_https") else current.forceHttps,
@@ -2429,6 +2430,7 @@ class OpenAiAgent(
                         protocol = AppSettings.MINI_SERVER_PROTOCOL_HTTP,
                         host = AppSettings.DEFAULT_MINI_SERVER_HOST,
                         port = AppSettings.DEFAULT_MINI_SERVER_PORT,
+                        username = AppSettings.DEFAULT_MINI_SERVER_USERNAME,
                         password = "",
                         customDomains = emptyList(),
                         forceHttps = false,
@@ -2498,7 +2500,7 @@ class OpenAiAgent(
                 append(" 当前未设置访问密码，请仅在可信网络中使用。")
             }
             if (config.protocol == AppSettings.MINI_SERVER_PROTOCOL_HTTP) {
-                append(" HTTP 明文传输可能泄露访问路径、内容和密码。")
+                append(" HTTP 明文传输可能泄露访问路径、内容和账号密码。")
             }
         }
     }
@@ -3303,12 +3305,13 @@ class OpenAiAgent(
         .put(
             functionWithOptional(
                 "manage_mini_server",
-                "启动、停止、重启或更新 Lyra Code 内置微型 HTTP/HTTPS 静态服务器。服务器以当前工作区作为站点根目录，可用于 Vue/Vite/VitePress/HTML/CSS/JS 静态站点调试。action=status/update/start/stop/restart/reset；host=127.0.0.1 仅本机，0.0.0.0 面向局域网/公网映射；password 为空表示不启用 Basic 认证。HTTPS 支持 tls_key_store_base64/tls_key_store_password 或 tls_certificate_chain/tls_private_key；force_https 会把 HTTP 请求重定向到 HTTPS。",
+                "启动、停止、重启或更新 Lyra Code 内置微型 HTTP/HTTPS 静态服务器。服务器以当前工作区作为站点根目录，可用于 Vue/Vite/VitePress/HTML/CSS/JS 静态站点调试。action=status/update/start/stop/restart/reset；host=127.0.0.1 仅本机，0.0.0.0 面向局域网/公网映射；username/password 用于 Basic 认证，password 为空表示不启用认证。HTTPS 支持 tls_key_store_base64/tls_key_store_password 或 tls_certificate_chain/tls_private_key；force_https 会把 HTTP 请求重定向到 HTTPS。",
                 required = listOf("action" to "string"),
                 optional = listOf(
                     "protocol" to "string",
                     "host" to "string",
                     "port" to "integer",
+                    "username" to "string",
                     "password" to "string",
                     "custom_domains" to "array:string",
                     "force_https" to "boolean",
