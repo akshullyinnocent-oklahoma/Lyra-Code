@@ -75,6 +75,7 @@ internal fun UsageStatsScreen(controller: ChatController) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf("") }
     var summary by remember { mutableStateOf<UsageStatsSummary?>(null) }
+    var compactNumbers by rememberSaveable { mutableStateOf(true) }
     val selectedPeriod = UsageStatsPeriod.valueOf(selectedPeriodName)
     val conversationRevision = controller.conversations.size
     val currentMessageRevision = controller.messages.value.size
@@ -164,6 +165,30 @@ internal fun UsageStatsScreen(controller: ChatController) {
             }
         }
 
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterChip(
+                selected = compactNumbers,
+                onClick = { compactNumbers = true },
+                label = { Text("粗略显示") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            )
+            FilterChip(
+                selected = !compactNumbers,
+                onClick = { compactNumbers = false },
+                label = { Text("精确显示") },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            )
+        }
+
         KimiCardBox {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
@@ -213,43 +238,43 @@ internal fun UsageStatsScreen(controller: ChatController) {
             error.isNotBlank() -> KimiCardBox {
                 Text(error, color = MaterialTheme.colorScheme.error)
             }
-            summary != null -> UsageStatsContent(summary!!)
+            summary != null -> UsageStatsContent(summary!!, compactNumbers)
         }
     }
 }
 
 @Composable
-private fun UsageStatsContent(summary: UsageStatsSummary) {
+private fun UsageStatsContent(summary: UsageStatsSummary, compactNumbers: Boolean) {
     KimiSectionLabel("${summary.period.label}统计")
     UsageMetricCard(
         icon = Icons.Default.Forum,
         title = "对话次数",
-        value = formatStatsNumber(summary.conversationCount.toLong()),
+        value = formatStatsNumber(summary.conversationCount.toLong(), compactNumbers),
         description = "该时间段内有用户输入的会话数",
     )
     UsageMetricCard(
         icon = Icons.AutoMirrored.Filled.Input,
         title = "请求输入 Tokens",
-        value = formatStatsNumber(summary.userInputTokens),
+        value = formatStatsNumber(summary.userInputTokens, compactNumbers),
         description = "每次请求的上下文 + 工具结果 + 固定提示词估算",
     )
     UsageMetricCard(
         icon = Icons.Default.Output,
         title = "模型输出 Tokens",
-        value = formatStatsNumber(summary.aiOutputTokens),
+        value = formatStatsNumber(summary.aiOutputTokens, compactNumbers),
         description = "AI 正文 + thinking + 工具调用参数",
     )
 
     KimiCardBox {
         Text("明细", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         KimiDivider()
-        UsageDetailRow(Icons.Default.Analytics, "模型请求", "${summary.modelRequestCount} 次")
+        UsageDetailRow(Icons.Default.Analytics, "模型请求", "${formatStatsNumber(summary.modelRequestCount.toLong(), compactNumbers)} 次")
         KimiDivider()
-        UsageDetailRow(Icons.Default.Forum, "用户消息", "${summary.userMessageCount} 条")
+        UsageDetailRow(Icons.Default.Forum, "用户消息", "${formatStatsNumber(summary.userMessageCount.toLong(), compactNumbers)} 条")
         KimiDivider()
-        UsageDetailRow(Icons.Default.SmartToy, "AI 消息", "${summary.assistantMessageCount} 条")
+        UsageDetailRow(Icons.Default.SmartToy, "AI 消息", "${formatStatsNumber(summary.assistantMessageCount.toLong(), compactNumbers)} 条")
         KimiDivider()
-        UsageDetailRow(Icons.Default.Build, "工具结果", "${summary.toolMessageCount} 条")
+        UsageDetailRow(Icons.Default.Build, "工具结果", "${formatStatsNumber(summary.toolMessageCount.toLong(), compactNumbers)} 条")
     }
 
     Text(
@@ -323,8 +348,29 @@ private fun UsageDetailRow(icon: ImageVector, title: String, value: String) {
     }
 }
 
-private fun formatStatsNumber(value: Long): String {
-    return NumberFormat.getIntegerInstance(Locale.getDefault()).format(value)
+private fun formatStatsNumber(value: Long, compact: Boolean): String {
+    if (!compact) return NumberFormat.getIntegerInstance(Locale.getDefault()).format(value)
+    return formatCompactChineseNumber(value)
+}
+
+private fun formatCompactChineseNumber(value: Long): String {
+    val absValue = kotlin.math.abs(value)
+    if (absValue < 10_000L) return NumberFormat.getIntegerInstance(Locale.getDefault()).format(value)
+    val units = listOf(
+        10_000.0 to "万",
+        100_000_000.0 to "亿",
+        1_000_000_000_000.0 to "万亿",
+        10_000_000_000_000_000.0 to "亿亿",
+    )
+    val (divisor, unit) = units.lastOrNull { absValue >= it.first } ?: units.first()
+    val scaled = absValue / divisor
+    val rounded = if (scaled < 100.0) kotlin.math.round(scaled * 10.0) / 10.0 else kotlin.math.round(scaled)
+    val numberText = if (rounded % 1.0 == 0.0) {
+        rounded.toLong().toString()
+    } else {
+        String.format(Locale.getDefault(), "%.1f", rounded)
+    }
+    return "${if (value < 0) "-" else ""}$numberText$unit"
 }
 
 private fun shiftAnchor(anchorAt: Long, period: UsageStatsPeriod, amount: Int): Long {

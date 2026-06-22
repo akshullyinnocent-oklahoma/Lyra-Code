@@ -563,7 +563,8 @@ class MiniServerManager(
 
     private fun authorized(config: MiniServerConfig, authorization: String?): Boolean {
         if (config.password.isBlank()) return true
-        val expected = "Basic " + Base64.encodeToString("lyra:${config.password}".toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
+        val username = config.username.ifBlank { AppSettings.DEFAULT_MINI_SERVER_USERNAME }
+        val expected = "Basic " + Base64.encodeToString("$username:${config.password}".toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
         return authorization == expected
     }
 

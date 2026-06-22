@@ -198,6 +198,7 @@ import com.yukisoffd.lyracode.workspace.UploadedFile
 import com.yukisoffd.lyracode.workspace.UploadedFileManager
 import com.yukisoffd.lyracode.workspace.WorkspaceManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -355,8 +356,6 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
     var autoFollowOutput by remember(controller.activeConversationId.value) { mutableStateOf(true) }
     var keyboardShouldLiftOutput by remember(controller.activeConversationId.value) { mutableStateOf(false) }
     val isInterrupted = controller.activeConversation()?.status == ConversationStore.STATUS_INTERRUPTED
-    val termuxPermissionGranted = termuxExecutor.hasRunCommandPermission()
-    var hideTermuxHint by remember { mutableStateOf(settings.hideTermuxPermissionHint) }
     controller.pendingToolApproval.value?.let { pending ->
         ToolApprovalDialog(
             pending = pending,
@@ -455,13 +454,35 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
         return
     }
 
-    Column(
+    val chatBackground = remember(settings.settingsRevisionSafe()) {
+        settings.chatBackgroundPath
+            ?.let { path -> BitmapFactory.decodeFile(path)?.asImageBitmap() }
+    }
+    Box(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 18.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .background(MaterialTheme.colorScheme.background),
     ) {
+        if (chatBackground != null) {
+            Image(
+                bitmap = chatBackground,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                alpha = 0.34f,
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f)),
+            )
+        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
         TodoProgressPanel(settings, controller.activeConversationId.value, controller.todoItems)
         ConversationChangesPanel(settings, controller.activeConversationId.value, messageSnapshot)
         val isNearOutputEnd by remember {
@@ -504,6 +525,11 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             }
         }
         val blankTapInteraction = remember { MutableInteractionSource() }
+        val activeProcessKey = if (isRunning) {
+            renderItems.lastOrNull { it.process.isNotEmpty() }?.key
+        } else {
+            null
+        }
         Box(
             Modifier
                 .weight(1f)
@@ -520,21 +546,13 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                 contentPadding = PaddingValues(bottom = if (keyboardShouldLiftOutput) keyboardLiftDp else 0.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                if (messageSnapshot.isEmpty()) {
-                    item(key = "empty-greeting") {
-                        EmptyConversationGreeting(
-                            showTermuxHint = !termuxPermissionGranted && !hideTermuxHint,
-                            onGrantTermux = { requestTermuxRunCommandPermission(context) },
-                            onHideTermuxHint = {
-                                hideTermuxHint = true
-                                settings.hideTermuxPermissionHint = true
-                            },
-                        )
-                    }
-                }
                 items(renderItems, key = { it.key }) { item ->
                     if (item.process.isNotEmpty()) {
-                        AgentProcessSummary(item.process, selectionResetKey)
+                        AgentProcessSummary(
+                            messages = item.process,
+                            selectionResetKey = selectionResetKey,
+                            active = item.key == activeProcessKey,
+                        )
                     } else if (item.message != null) {
                         MessageCard(
                             message = item.message,
@@ -639,6 +657,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             }
         }
     }
+}
 }
 
 @Composable
@@ -945,58 +964,10 @@ internal fun RoleplayStickerAwareContent(
 }
 
 private fun AppSettings.settingsRevisionSafe(): Int {
-    return roleplayScenarios().hashCode() * 31 + selectedRoleplayId.hashCode() + immersiveRoleplayEnabled.hashCode()
-}
-
-@Composable
-internal fun EmptyConversationGreeting(
-    showTermuxHint: Boolean,
-    onGrantTermux: () -> Unit,
-    onHideTermuxHint: () -> Unit,
-) {
-    val greeting = remember { timeGreeting() }
-    KimiCardBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(greeting.title, style = MaterialTheme.typography.headlineSmall)
-            Text(greeting.message, color = KimiMuted, style = MaterialTheme.typography.bodyLarge)
-            if (showTermuxHint) {
-                KimiDivider()
-                Text(
-                    "更完整的本地开发、运行测试和执行脚本需要 Termux 通信权限。授权后，AI 才能使用 run_command 运行命令并读取 stdout/stderr。",
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KimiChip("授予 Termux 权限", onClick = onGrantTermux)
-                    KimiChip("不再提示", onClick = onHideTermuxHint)
-                }
-            }
-        }
-    }
-}
-
-internal data class GreetingText(val title: String, val message: String)
-
-internal fun timeGreeting(): GreetingText {
-    val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-    val title = when (hour) {
-        in 5..8 -> "早上好"
-        in 9..10 -> "上午好"
-        in 11..13 -> "中午好"
-        in 14..17 -> "下午好"
-        in 18..22 -> "晚上好"
-        else -> "凌晨好"
-    }
-    val messages = when (title) {
-        "早上好" -> listOf("今天要做什么工作？我可以帮你拆任务、写代码或查资料。", "新的一天开始了，可以从一个清晰的小目标开始。")
-        "上午好" -> listOf("上午适合处理复杂任务，需要我先帮你规划一下吗？", "有什么项目要推进？可以直接把需求发给我。")
-        "中午好" -> listOf("中午好，先把任务说清楚，我来帮你接着做。", "要不要趁现在整理一下待办和代码问题？")
-        "下午好" -> listOf("下午好，适合做调试、重构和收尾工作。", "今天还有什么工作要完成？")
-        "晚上好" -> listOf("晚上好，可以把今天没处理完的任务交给我继续。", "夜晚适合安静地解决问题，也别忘了休息。")
-        else -> listOf("夜深了，早点睡。要是必须赶工，我可以帮你把任务拆小一点。", "凌晨好，先处理最关键的部分，别把精力浪费在无关问题上。")
-    }
-    val index = kotlin.math.abs((System.currentTimeMillis() / 60_000L).toInt()) % messages.size
-    return GreetingText(title, messages[index])
+    return roleplayScenarios().hashCode() * 31 +
+        selectedRoleplayId.hashCode() +
+        immersiveRoleplayEnabled.hashCode() +
+        chatBackgroundPath.hashCode()
 }
 
 internal fun requestTermuxRunCommandPermission(context: Context) {
@@ -1466,10 +1437,33 @@ internal fun chatRenderItems(messages: List<ChatRecord>): List<ChatRenderItem> {
 }
 
 @Composable
-internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: Int) {
+internal fun AgentProcessSummary(
+    messages: List<ChatRecord>,
+    selectionResetKey: Int,
+    active: Boolean = false,
+) {
     var expanded by rememberSaveable(messages.firstOrNull()?.id ?: 0L) { mutableStateOf(false) }
     val toolCount = messages.count { it.role == "tool" }
     val thinkingCount = messages.count { it.thinking.isNotBlank() || it.role == "assistant" }
+    val processKey = messages.firstOrNull()?.id ?: 0L
+    val fallbackNow = remember(processKey) { System.currentTimeMillis() }
+    var wasActive by rememberSaveable(processKey) { mutableStateOf(false) }
+    var completedAt by rememberSaveable(processKey) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(active, processKey) {
+        if (active) {
+            wasActive = true
+            completedAt = null
+        } else if (wasActive && completedAt == null) {
+            completedAt = System.currentTimeMillis()
+        }
+    }
+    val startedAt = messages.minOfOrNull { it.createdAt } ?: fallbackNow
+    val finishedAt = completedAt ?: messages.maxOfOrNull { it.createdAt } ?: fallbackNow
+    val collapsedText = if (expanded) {
+        "过程记录已展开"
+    } else {
+        "过程记录已收起 · thinking $thinkingCount / 工具 $toolCount"
+    }
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)),
@@ -1477,8 +1471,13 @@ internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: 
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ProcessDurationHeader(
+                startedAt = startedAt,
+                finishedAt = finishedAt,
+                active = active,
+            )
             CollapsedStatusLine(
-                text = if (expanded) "过程记录已展开" else "过程记录已收起 · thinking $thinkingCount / 工具 $toolCount",
+                text = collapsedText,
                 expanded = expanded,
                 onClick = { expanded = !expanded },
             )
@@ -1489,6 +1488,49 @@ internal fun AgentProcessSummary(messages: List<ChatRecord>, selectionResetKey: 
             }
         }
     }
+}
+
+@Composable
+internal fun ProcessDurationHeader(
+    startedAt: Long,
+    finishedAt: Long?,
+    active: Boolean,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = if (active) "任务处理中 · " else "任务耗时 · ",
+            color = KimiMuted,
+            style = MaterialTheme.typography.labelSmall,
+        )
+        ProcessDurationText(
+            startedAt = startedAt,
+            finishedAt = finishedAt,
+            active = active,
+        )
+    }
+}
+
+@Composable
+internal fun ProcessDurationText(
+    startedAt: Long,
+    finishedAt: Long?,
+    active: Boolean,
+) {
+    var now by remember(startedAt, finishedAt, active) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt, finishedAt, active) {
+        if (active) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1000L)
+            }
+        }
+    }
+    val endAt = if (active) now else (finishedAt ?: now)
+    Text(
+        text = formatProcessDuration((endAt - startedAt).coerceAtLeast(0L)),
+        color = KimiMuted,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }
 
 @Composable
@@ -1780,6 +1822,7 @@ internal fun MessageCard(
 ) {
     val visibleContent = displayMessageContent(message)
     val mediaPreviews = remember(message.content) { uploadedMediaPreviews(message.content) }
+    val filePreviews = remember(message.content) { uploadedFilePreviews(message.content) }
     val container = when (message.role) {
         "user" -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
         "tool" -> MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
@@ -1797,6 +1840,10 @@ internal fun MessageCard(
     var editDialogOpen by rememberSaveable(message.id) { mutableStateOf(false) }
     var editText by rememberSaveable(message.id) { mutableStateOf(message.content) }
     val isUser = message.role == "user"
+    val shouldRenderBubble = !isUser ||
+        visibleContent.isNotBlank() ||
+        mediaPreviews.isNotEmpty() ||
+        message.thinking.isNotBlank()
     if (editDialogOpen) {
         AlertDialog(
             onDismissRequest = { editDialogOpen = false },
@@ -1828,139 +1875,161 @@ internal fun MessageCard(
         )
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Box {
-            val cardModifier = if (isUser) {
-                Modifier
-                    .widthIn(max = 320.dp)
-                    .combinedClickable(
-                        onClick = {},
-                        onLongClick = {
-                            editText = message.content
-                            menuExpanded = true
-                        },
-                    )
-            } else {
-                Modifier.fillMaxWidth()
+        Column(
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (isUser && filePreviews.isNotEmpty()) {
+                UploadedFileCardColumn(filePreviews)
             }
-            Card(
-                colors = CardDefaults.cardColors(containerColor = container),
-                shape = if (isUser) RoundedCornerShape(22.dp) else RoundedCornerShape(18.dp),
-                border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
-                modifier = cardModifier,
-            ) {
-                Column(
-                    Modifier.padding(
-                        horizontal = if (isUser) 16.dp else 6.dp,
-                        vertical = if (isUser) 9.dp else 6.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (!isUser && message.role != "assistant") {
-                        Text("工具结果", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
-                    }
-                    if (message.thinking.isNotBlank()) {
-                        CollapsedStatusLine(
-                            text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
-                            expanded = showThinking,
-                            onClick = { showThinking = !showThinking },
-                        )
-                        AnimatedVisibility(showThinking) {
-                            key(selectionResetKey) {
-                                SelectionContainer {
-                                    Text(
-                                        message.thinking,
-                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = contentColor,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (message.role == "tool") {
-                        ToolResultContent(
-                            content = message.content,
-                            expanded = showToolResult,
-                            onToggle = { showToolResult = !showToolResult },
-                        )
+            if (shouldRenderBubble) {
+                Box {
+                    val cardModifier = if (isUser) {
+                        Modifier
+                            .widthIn(max = 320.dp)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    editText = message.content
+                                    menuExpanded = true
+                                },
+                            )
                     } else {
-                        if (isUser && mediaPreviews.isNotEmpty()) {
-                            UploadedMediaGrid(mediaPreviews)
-                        }
-                        if (visibleContent.isNotBlank()) {
-                            key(selectionResetKey) {
-                                if (isUser) {
-                                    if (selectable) {
+                        Modifier.fillMaxWidth()
+                    }
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = container),
+                        shape = if (isUser) RoundedCornerShape(22.dp) else RoundedCornerShape(18.dp),
+                        border = if (message.role == "assistant") null else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
+                        modifier = cardModifier,
+                    ) {
+                        Column(
+                            Modifier.padding(
+                                horizontal = if (isUser) 16.dp else 6.dp,
+                                vertical = if (isUser) 9.dp else 6.dp,
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (!isUser && message.role != "assistant") {
+                                Text("工具结果", color = KimiMuted, style = MaterialTheme.typography.labelMedium)
+                            }
+                            if (message.thinking.isNotBlank()) {
+                                CollapsedStatusLine(
+                                    text = if (showThinking) "思考详情已展开" else if (message.content.isBlank()) "thinking..." else "思考完毕",
+                                    expanded = showThinking,
+                                    onClick = { showThinking = !showThinking },
+                                )
+                                AnimatedVisibility(showThinking) {
+                                    key(selectionResetKey) {
                                         SelectionContainer {
-                                            Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                            Text(
+                                                message.thinking,
+                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                                color = contentColor,
+                                            )
                                         }
-                                    } else {
-                                        Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
-                                    }
-                                } else {
-                                    SelectionContainer {
-                                        RichMarkdownContent(visibleContent)
                                     }
                                 }
                             }
-                            if (message.role == "assistant" && !inProcessRecord) {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    IconButton(
-                                        onClick = { clipboard.setText(AnnotatedString(message.content)) },
-                                        modifier = Modifier.size(36.dp),
-                                    ) {
-                                        Icon(
-                                            Icons.Default.ContentCopy,
-                                            contentDescription = "复制",
-                                            tint = KimiMuted,
-                                            modifier = Modifier.size(20.dp),
-                                        )
+                            if (message.role == "tool") {
+                                ToolResultContent(
+                                    content = message.content,
+                                    expanded = showToolResult,
+                                    onToggle = { showToolResult = !showToolResult },
+                                )
+                            } else {
+                                if (isUser && mediaPreviews.isNotEmpty()) {
+                                    UploadedMediaGrid(mediaPreviews)
+                                }
+                                if (visibleContent.isNotBlank()) {
+                                    key(selectionResetKey) {
+                                        if (isUser) {
+                                            if (selectable) {
+                                                SelectionContainer {
+                                                    Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                                }
+                                            } else {
+                                                Text(visibleContent, color = contentColor, style = MaterialTheme.typography.bodyLarge)
+                                            }
+                                        } else {
+                                            SelectionContainer {
+                                                RichMarkdownContent(visibleContent)
+                                            }
+                                        }
                                     }
+                                    if (message.role == "assistant" && !inProcessRecord) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                            IconButton(
+                                                onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                                                modifier = Modifier.size(36.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.ContentCopy,
+                                                    contentDescription = "复制",
+                                                    tint = KimiMuted,
+                                                    modifier = Modifier.size(20.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (message.role == "assistant" && !inProcessRecord) {
+                                    Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
                                 }
                             }
-                        } else if (message.role == "assistant" && !inProcessRecord) {
-                            Text("正在组织输出...", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                }
-            }
-            if (isUser) DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                DropdownMenuItem(
-                    text = { Text("复制") },
-                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
-                    onClick = {
-                        clipboard.setText(AnnotatedString(message.content))
-                        menuExpanded = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("选择文本") },
-                    leadingIcon = { Icon(Icons.Default.TextFields, contentDescription = null) },
-                    onClick = {
-                        selectable = true
-                        menuExpanded = false
-                    },
-                )
-                if (isUser && onEditAndRegenerate != null) {
-                    DropdownMenuItem(
-                        text = { Text("修改并重新生成") },
-                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                        onClick = {
-                            editText = message.content
-                            menuExpanded = false
-                            editDialogOpen = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("重新生成") },
-                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
-                        onClick = {
-                            menuExpanded = false
-                            onEditAndRegenerate(message.id, message.content)
-                        },
-                    )
+                    if (isUser) DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text("复制") },
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                            onClick = {
+                                clipboard.setText(AnnotatedString(message.content))
+                                menuExpanded = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("选择文本") },
+                            leadingIcon = { Icon(Icons.Default.TextFields, contentDescription = null) },
+                            onClick = {
+                                selectable = true
+                                menuExpanded = false
+                            },
+                        )
+                        if (isUser && onEditAndRegenerate != null) {
+                            DropdownMenuItem(
+                                text = { Text("修改并重新生成") },
+                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                onClick = {
+                                    editText = message.content
+                                    menuExpanded = false
+                                    editDialogOpen = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("重新生成") },
+                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                                onClick = {
+                                    menuExpanded = false
+                                    onEditAndRegenerate(message.id, message.content)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+internal fun formatProcessDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return when {
+        hours > 0L -> "${hours}小时${minutes}分${seconds}秒"
+        minutes > 0L -> "${minutes}分${seconds}秒"
+        else -> "${seconds}秒"
     }
 }
 
@@ -2008,6 +2077,74 @@ internal data class UploadedMediaPreview(
     val uri: String,
 )
 
+internal data class UploadedFilePreview(
+    val name: String,
+    val sizeBytes: Long?,
+    val type: String,
+)
+
+@Composable
+internal fun UploadedFileCardColumn(files: List<UploadedFilePreview>) {
+    Column(
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        files.forEach { file ->
+            UploadedFileCard(file)
+        }
+    }
+}
+
+@Composable
+internal fun UploadedFileCard(file: UploadedFilePreview) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+        modifier = Modifier.widthIn(max = 320.dp),
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(58.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Description,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+            Column(Modifier.widthIn(min = 150.dp, max = 220.dp)) {
+                Text(
+                    file.name,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val meta = listOf(file.type, formatUploadedFileSize(file.sizeBytes))
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · ")
+                Text(
+                    meta,
+                    color = KimiMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 internal fun UploadedMediaGrid(media: List<UploadedMediaPreview>) {
     Row(
@@ -2038,25 +2175,21 @@ internal fun uploadedMediaPreviews(content: String): List<UploadedMediaPreview> 
     }.toList()
 }
 
+internal fun uploadedFilePreviews(content: String): List<UploadedFilePreview> {
+    val regex = Regex("用户上传文件：([^\\n]+)\\n大小：(\\d+) bytes", RegexOption.MULTILINE)
+    return regex.findAll(content).map {
+        val name = it.groupValues[1].trim().ifBlank { "未命名文件" }
+        UploadedFilePreview(
+            name = name,
+            sizeBytes = it.groupValues[2].toLongOrNull(),
+            type = uploadedFileTypeLabel(name),
+        )
+    }.toList()
+}
+
 internal fun displayMessageContent(message: ChatRecord): String {
     if (message.role != "user") return message.content
-    val withoutMedia = stripUploadedMediaBlocks(message.content)
-    if (!withoutMedia.contains("用户上传文件：")) return withoutMedia
-    val marker = "用户上传文件："
-    val textPart = withoutMedia.substringBefore(marker).trim()
-    val fileNames = withoutMedia.lineSequence()
-        .map { it.trim() }
-        .filter { it.startsWith(marker) }
-        .map { it.removePrefix(marker).trim().ifBlank { "未命名文件" } }
-        .toList()
-    return buildString {
-        if (textPart.isNotBlank()) {
-            append(textPart)
-            append("\n\n")
-        }
-        append("已上传文件：")
-        append(fileNames.joinToString("、"))
-    }
+    return stripUploadedFileBlocks(stripUploadedMediaBlocks(message.content)).trim()
 }
 
 internal fun stripUploadedMediaBlocks(content: String): String {
@@ -2068,8 +2201,18 @@ internal fun stripUploadedMediaBlocks(content: String): String {
 
 @Composable
 internal fun ToolResultContent(content: String, expanded: Boolean, onToggle: () -> Unit) {
+    val previewLimit = 12_000
     val preview = remember(content) {
         content.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().ifBlank { "空结果" }.take(180)
+    }
+    val renderedPreview = remember(content) {
+        content.ifBlank { "..." }.let { value ->
+            if (value.length > previewLimit) {
+                value.take(previewLimit) + "\n\n... 已截断预览，完整工具结果共 ${value.length} 字符。"
+            } else {
+                value
+            }
+        }
     }
     val changes = remember(content) { parseFileChanges(content) }
     var expandedChangePath by rememberSaveable(content) { mutableStateOf<String?>(null) }
@@ -2111,7 +2254,7 @@ internal fun ToolResultContent(content: String, expanded: Boolean, onToggle: () 
     AnimatedVisibility(expanded) {
         SelectionContainer {
             Text(
-                content.ifBlank { "..." },
+                renderedPreview,
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 420.dp)
@@ -2134,6 +2277,43 @@ internal data class FileChangeView(
 
 internal fun fileNameForDisplay(path: String): String {
     return path.trim().replace('\\', '/').substringAfterLast('/').ifBlank { path.ifBlank { "未命名文件" } }
+}
+
+internal fun stripUploadedFileBlocks(content: String): String {
+    return content
+        .replace(
+            Regex("\\n*用户上传文件：[^\\n]+\\n大小：\\d+ bytes\\n\\n```text\\n[\\s\\S]*?\\n```\\n?"),
+            "\n",
+        )
+        .replace(Regex("\\n*用户上传文件：[^\\n]+\\n大小：\\d+ bytes\\n?"), "\n")
+        .trim()
+}
+
+internal fun uploadedFileTypeLabel(name: String): String {
+    val ext = name.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+    return when (ext) {
+        "" -> "文件"
+        "txt", "md", "json", "xml", "csv", "log" -> ext.uppercase() + " 文本"
+        "kt", "java", "py", "js", "ts", "html", "css", "go", "rs", "cpp", "c", "h" -> ext.uppercase() + " 代码"
+        "zip", "7z", "rar", "tar", "gz" -> ext.uppercase() + " 压缩包"
+        "pdf" -> "PDF 文档"
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx" -> ext.uppercase() + " 文档"
+        else -> ext.uppercase() + " 文件"
+    }
+}
+
+internal fun formatUploadedFileSize(bytes: Long?): String {
+    val value = bytes ?: return ""
+    if (value < 1024L) return "${value}B"
+    val units = listOf("KB", "MB", "GB", "TB")
+    var size = value.toDouble()
+    var unitIndex = -1
+    do {
+        size /= 1024.0
+        unitIndex++
+    } while (size >= 1024.0 && unitIndex < units.lastIndex)
+    val text = if (size >= 10.0) "%.0f".format(size) else "%.1f".format(size)
+    return "$text${units[unitIndex]}"
 }
 
 @Composable

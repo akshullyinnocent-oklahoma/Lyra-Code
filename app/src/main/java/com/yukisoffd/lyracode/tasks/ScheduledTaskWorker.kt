@@ -14,6 +14,7 @@ import com.yukisoffd.lyracode.data.AppSettings
 import com.yukisoffd.lyracode.data.AuditLogStore
 import com.yukisoffd.lyracode.data.BackupManager
 import com.yukisoffd.lyracode.data.ConversationStore
+import com.yukisoffd.lyracode.filetransfer.FileTransferClient
 import com.yukisoffd.lyracode.mcp.McpClientManager
 import com.yukisoffd.lyracode.server.MiniServerManager
 import com.yukisoffd.lyracode.ssh.SshExecutor
@@ -202,6 +203,7 @@ class ScheduledTaskWorker(
             sshExecutor = SshExecutor(settings),
             systemCommandExecutor = SystemCommandExecutor(applicationContext, settings),
             webDavClient = WebDavClient(),
+            fileTransferClient = FileTransferClient(),
             backupManager = BackupManager(applicationContext, settings, conversationStore),
             miniServerManager = miniServerManager,
             downloadTaskManager = downloadTaskManager,
