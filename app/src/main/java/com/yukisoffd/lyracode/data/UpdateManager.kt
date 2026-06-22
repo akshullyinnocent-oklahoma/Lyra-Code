@@ -107,6 +107,25 @@ class UpdateManager(private val context: Context) {
 
     fun hasAvailableUpdate(): Boolean = latestAvailableUpdate() != null
 
+    fun updatePromptDisabled(): Boolean = prefs.getBoolean(KEY_UPDATE_PROMPT_DISABLED, false)
+
+    fun setUpdatePromptDisabled(disabled: Boolean) {
+        prefs.edit().putBoolean(KEY_UPDATE_PROMPT_DISABLED, disabled).apply()
+    }
+
+    fun shouldShowDailyUpdatePrompt(): Boolean {
+        if (updatePromptDisabled()) return false
+        if (latestAvailableUpdate() == null) return false
+        val today = java.time.LocalDate.now().toString()
+        return prefs.getString(KEY_LAST_UPDATE_PROMPT_DATE, "") != today
+    }
+
+    fun markDailyUpdatePromptShown() {
+        prefs.edit()
+            .putString(KEY_LAST_UPDATE_PROMPT_DATE, java.time.LocalDate.now().toString())
+            .apply()
+    }
+
     fun saveLatestAvailableUpdate(info: AppUpdateInfo) {
         prefs.edit()
             .putLong(KEY_LATEST_VERSION_CODE, info.versionCode)
@@ -355,5 +374,7 @@ class UpdateManager(private val context: Context) {
         const val KEY_LATEST_RELEASE_NOTES_URL = "latest_release_notes_url"
         const val KEY_LATEST_WEB_URL = "latest_web_url"
         const val KEY_LATEST_MANDATORY = "latest_mandatory"
+        const val KEY_UPDATE_PROMPT_DISABLED = "update_prompt_disabled"
+        const val KEY_LAST_UPDATE_PROMPT_DATE = "last_update_prompt_date"
     }
 }

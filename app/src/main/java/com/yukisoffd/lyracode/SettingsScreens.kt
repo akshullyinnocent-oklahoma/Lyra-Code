@@ -315,6 +315,7 @@ internal fun SettingsScreen(
                     "model" -> ModelServiceSettings(settings, controller)
                     "workspace" -> WorkspaceSettings(workspaceDisplayName, workspaceManager, onPickWorkspace)
                     "theme" -> ThemeSettings(
+                        settings = settings,
                         themeMode = themeMode,
                         dynamicColorEnabled = dynamicColorEnabled,
                         onDynamicColorChange = onDynamicColorChange,
@@ -1137,6 +1138,7 @@ internal fun WorkspaceSettings(
 
 @Composable
 internal fun ThemeSettings(
+    settings: AppSettings,
     themeMode: String,
     dynamicColorEnabled: Boolean,
     onDynamicColorChange: (Boolean) -> Unit,
@@ -1148,6 +1150,45 @@ internal fun ThemeSettings(
     onOpenFontSettings: () -> Unit,
     onOpenRefreshRateSettings: () -> Unit,
 ) {
+    val context = LocalContext.current
+    var backgroundRevision by remember { mutableIntStateOf(0) }
+    var notice by remember { mutableStateOf("") }
+    var cropBackgroundUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    val screenAspect = remember {
+        val metrics = context.resources.displayMetrics
+        metrics.widthPixels.toFloat() / metrics.heightPixels.toFloat().coerceAtLeast(1f)
+    }
+    val backgroundLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) cropBackgroundUri = uri
+    }
+    cropBackgroundUri?.let { uri ->
+        ImageCropUploadDialog(
+            uri = uri,
+            fixedCropAspectRatio = screenAspect,
+            onDismiss = { cropBackgroundUri = null },
+            onUseOriginal = {
+                settings.saveChatBackground(uri).fold(
+                    onSuccess = {
+                        notice = "聊天背景已保存"
+                        backgroundRevision++
+                    },
+                    onFailure = { notice = it.message.orEmpty().ifBlank { "保存失败" } },
+                )
+                cropBackgroundUri = null
+            },
+            onCropped = { cropped ->
+                settings.saveChatBackground(cropped).fold(
+                    onSuccess = {
+                        notice = "聊天背景已保存"
+                        backgroundRevision++
+                    },
+                    onFailure = { notice = it.message.orEmpty().ifBlank { "保存失败" } },
+                )
+                cropBackgroundUri = null
+            },
+        )
+    }
+    val hasBackground = remember(backgroundRevision) { !settings.chatBackgroundPath.isNullOrBlank() }
     KimiCardBox {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -1165,6 +1206,25 @@ internal fun ThemeSettings(
         KimiMenuRow(Icons.Default.FormatSize, "字体大小", fontScaleName(fontScaleMode, customFontScale), onOpenFontSettings)
         KimiDivider()
         KimiMenuRow(Icons.Default.Speed, "刷新率", refreshRateName(refreshRateMode), onOpenRefreshRateSettings)
+        KimiDivider()
+        KimiMenuRow(
+            Icons.Default.Image,
+            "聊天背景",
+            if (hasBackground) "已设置自定义背景" else "纯色背景",
+        ) {
+            backgroundLauncher.launch("image/*")
+        }
+        if (hasBackground) {
+            KimiDivider()
+            KimiMenuRow(Icons.Default.DeleteOutline, "移除聊天背景", "恢复纯色背景") {
+                settings.clearChatBackground()
+                notice = "已恢复纯色背景"
+                backgroundRevision++
+            }
+        }
+        if (notice.isNotBlank()) {
+            Text(notice, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
@@ -2039,7 +2099,6 @@ internal fun AgentToolSettings(settings: AppSettings, termuxExecutor: TermuxExec
 internal fun TermuxSettings(settings: AppSettings, termuxExecutor: TermuxExecutor, workspaceManager: WorkspaceManager) {
     val context = LocalContext.current
     var revision by remember { mutableIntStateOf(0) }
-    var hideHint by remember { mutableStateOf(settings.hideTermuxPermissionHint) }
     val permissionGranted = remember(revision) { termuxExecutor.hasRunCommandPermission() }
     KimiCardBox {
         KimiMenuRow(Icons.Default.Terminal, "Termux", if (termuxExecutor.isTermuxInstalled()) "已安装" else "未安装")
@@ -2052,20 +2111,6 @@ internal fun TermuxSettings(settings: AppSettings, termuxExecutor: TermuxExecuto
         }
         KimiDivider()
         KimiMenuRow(Icons.Default.Folder, "Termux 路径", workspaceManager.termuxRootPath() ?: "仅 primary")
-        KimiDivider()
-        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("对话页不再提示授权", style = MaterialTheme.typography.titleSmall)
-                Text("关闭新对话空白页中的 Termux 权限引导。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
-            }
-            Switch(
-                checked = hideHint,
-                onCheckedChange = {
-                    hideHint = it
-                    settings.hideTermuxPermissionHint = it
-                },
-            )
-        }
     }
     TermuxSetupGuide()
 }
@@ -4262,6 +4307,7 @@ internal fun AboutSoftwareScreen(
     var downloadProgress by remember { mutableStateOf<UpdateDownloadProgress?>(null) }
     var downloading by remember { mutableStateOf(false) }
     var pendingApk by remember { mutableStateOf(updateManager.pendingDownloadedApk()) }
+    var updatePromptDisabled by remember { mutableStateOf(updateManager.updatePromptDisabled()) }
     val installPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val apk = updateManager.pendingDownloadedApk()
         pendingApk = apk
@@ -4384,10 +4430,31 @@ internal fun AboutSoftwareScreen(
                     )
                 }
                 KimiDivider()
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("不弹出更新提示", style = MaterialTheme.typography.titleSmall)
+                        Text("关闭进入软件时每日一次的新版本弹窗，不影响手动检测更新。", color = KimiMuted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(
+                        checked = updatePromptDisabled,
+                        onCheckedChange = {
+                            updatePromptDisabled = it
+                            updateManager.setUpdatePromptDisabled(it)
+                        },
+                    )
+                }
+                KimiDivider()
                 KimiMenuRow(Icons.Default.Apps, "应用 ID", context.packageName)
             }
             KimiSectionLabel("仓库")
             KimiCardBox {
+                SocialLinkRow(
+                    logo = { Icon(Icons.Default.Public, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    title = "官网",
+                    value = "lyracode.app",
+                    onClick = { uriHandler.openUri("https://lyracode.app") },
+                )
+                KimiDivider()
                 SocialLinkRow(
                     logo = { SocialLogoBadge(R.drawable.ic_simple_github) },
                     title = "GitHub",

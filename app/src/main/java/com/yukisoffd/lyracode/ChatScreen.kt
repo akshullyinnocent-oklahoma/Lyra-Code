@@ -356,8 +356,6 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
     var autoFollowOutput by remember(controller.activeConversationId.value) { mutableStateOf(true) }
     var keyboardShouldLiftOutput by remember(controller.activeConversationId.value) { mutableStateOf(false) }
     val isInterrupted = controller.activeConversation()?.status == ConversationStore.STATUS_INTERRUPTED
-    val termuxPermissionGranted = termuxExecutor.hasRunCommandPermission()
-    var hideTermuxHint by remember { mutableStateOf(settings.hideTermuxPermissionHint) }
     controller.pendingToolApproval.value?.let { pending ->
         ToolApprovalDialog(
             pending = pending,
@@ -456,13 +454,35 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
         return
     }
 
-    Column(
+    val chatBackground = remember(settings.settingsRevisionSafe()) {
+        settings.chatBackgroundPath
+            ?.let { path -> BitmapFactory.decodeFile(path)?.asImageBitmap() }
+    }
+    Box(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(horizontal = 18.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .background(MaterialTheme.colorScheme.background),
     ) {
+        if (chatBackground != null) {
+            Image(
+                bitmap = chatBackground,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+                alpha = 0.34f,
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background.copy(alpha = 0.42f)),
+            )
+        }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
         TodoProgressPanel(settings, controller.activeConversationId.value, controller.todoItems)
         ConversationChangesPanel(settings, controller.activeConversationId.value, messageSnapshot)
         val isNearOutputEnd by remember {
@@ -526,18 +546,6 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
                 contentPadding = PaddingValues(bottom = if (keyboardShouldLiftOutput) keyboardLiftDp else 0.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
-                if (messageSnapshot.isEmpty()) {
-                    item(key = "empty-greeting") {
-                        EmptyConversationGreeting(
-                            showTermuxHint = !termuxPermissionGranted && !hideTermuxHint,
-                            onGrantTermux = { requestTermuxRunCommandPermission(context) },
-                            onHideTermuxHint = {
-                                hideTermuxHint = true
-                                settings.hideTermuxPermissionHint = true
-                            },
-                        )
-                    }
-                }
                 items(renderItems, key = { it.key }) { item ->
                     if (item.process.isNotEmpty()) {
                         AgentProcessSummary(
@@ -649,6 +657,7 @@ internal fun ChatScreen(controller: ChatController, settings: AppSettings, termu
             }
         }
     }
+}
 }
 
 @Composable
@@ -955,58 +964,10 @@ internal fun RoleplayStickerAwareContent(
 }
 
 private fun AppSettings.settingsRevisionSafe(): Int {
-    return roleplayScenarios().hashCode() * 31 + selectedRoleplayId.hashCode() + immersiveRoleplayEnabled.hashCode()
-}
-
-@Composable
-internal fun EmptyConversationGreeting(
-    showTermuxHint: Boolean,
-    onGrantTermux: () -> Unit,
-    onHideTermuxHint: () -> Unit,
-) {
-    val greeting = remember { timeGreeting() }
-    KimiCardBox {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(greeting.title, style = MaterialTheme.typography.headlineSmall)
-            Text(greeting.message, color = KimiMuted, style = MaterialTheme.typography.bodyLarge)
-            if (showTermuxHint) {
-                KimiDivider()
-                Text(
-                    "更完整的本地开发、运行测试和执行脚本需要 Termux 通信权限。授权后，AI 才能使用 run_command 运行命令并读取 stdout/stderr。",
-                    color = KimiMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KimiChip("授予 Termux 权限", onClick = onGrantTermux)
-                    KimiChip("不再提示", onClick = onHideTermuxHint)
-                }
-            }
-        }
-    }
-}
-
-internal data class GreetingText(val title: String, val message: String)
-
-internal fun timeGreeting(): GreetingText {
-    val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-    val title = when (hour) {
-        in 5..8 -> "早上好"
-        in 9..10 -> "上午好"
-        in 11..13 -> "中午好"
-        in 14..17 -> "下午好"
-        in 18..22 -> "晚上好"
-        else -> "凌晨好"
-    }
-    val messages = when (title) {
-        "早上好" -> listOf("今天要做什么工作？我可以帮你拆任务、写代码或查资料。", "新的一天开始了，可以从一个清晰的小目标开始。")
-        "上午好" -> listOf("上午适合处理复杂任务，需要我先帮你规划一下吗？", "有什么项目要推进？可以直接把需求发给我。")
-        "中午好" -> listOf("中午好，先把任务说清楚，我来帮你接着做。", "要不要趁现在整理一下待办和代码问题？")
-        "下午好" -> listOf("下午好，适合做调试、重构和收尾工作。", "今天还有什么工作要完成？")
-        "晚上好" -> listOf("晚上好，可以把今天没处理完的任务交给我继续。", "夜晚适合安静地解决问题，也别忘了休息。")
-        else -> listOf("夜深了，早点睡。要是必须赶工，我可以帮你把任务拆小一点。", "凌晨好，先处理最关键的部分，别把精力浪费在无关问题上。")
-    }
-    val index = kotlin.math.abs((System.currentTimeMillis() / 60_000L).toInt()) % messages.size
-    return GreetingText(title, messages[index])
+    return roleplayScenarios().hashCode() * 31 +
+        selectedRoleplayId.hashCode() +
+        immersiveRoleplayEnabled.hashCode() +
+        chatBackgroundPath.hashCode()
 }
 
 internal fun requestTermuxRunCommandPermission(context: Context) {

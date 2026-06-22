@@ -167,6 +167,8 @@ import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.SkillPack
 import com.yukisoffd.lyracode.data.SshServerConfig
+import com.yukisoffd.lyracode.data.AppUpdateInfo
+import com.yukisoffd.lyracode.data.UpdateDownloadProgress
 import com.yukisoffd.lyracode.data.UpdateManager
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.filetransfer.FileTransferClient
@@ -253,7 +255,12 @@ internal fun LyraCodeApp(
     var appNotice by remember { mutableStateOf("") }
     var backupImportMode by remember { mutableStateOf("supplement") }
     val updateManager = remember(context) { UpdateManager(context) }
+    val uriHandler = LocalUriHandler.current
     var aboutUpdateAvailable by remember { mutableStateOf(updateManager.hasAvailableUpdate()) }
+    var startupUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var startupUpdateProgress by remember { mutableStateOf<UpdateDownloadProgress?>(null) }
+    var startupUpdateDownloading by remember { mutableStateOf(false) }
+    var startupPendingApk by remember { mutableStateOf(updateManager.pendingDownloadedApk()) }
     val appSettingsRevision = controller.settingsRevision.intValue
     val skills = remember(skillsRevision, appSettingsRevision) { settings.installedSkills() }
     var settingsDetailTitle by rememberSaveable { mutableStateOf<String?>(null) }
@@ -270,11 +277,34 @@ internal fun LyraCodeApp(
         backupStatus = message
         if (message.isNotBlank()) appNotice = message
     }
+    val startupInstallPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val apk = updateManager.pendingDownloadedApk()
+        startupPendingApk = apk
+        if (apk != null && !updateManager.needsInstallPermission()) {
+            runCatching { context.startActivity(updateManager.installIntent(apk)) }
+                .onFailure { appNotice = it.message.orEmpty().ifBlank { "无法打开安装器" } }
+        } else if (apk != null) {
+            appNotice = "授权未完成，可稍后在关于软件中继续安装"
+        }
+    }
+    fun openStartupInstaller(apk: File) {
+        if (updateManager.needsInstallPermission()) {
+            appNotice = "请授权安装未知来源应用，返回后将继续安装"
+            startupInstallPermissionLauncher.launch(updateManager.installPermissionIntent())
+        } else {
+            runCatching { context.startActivity(updateManager.installIntent(apk)) }
+                .onFailure { appNotice = it.message.orEmpty().ifBlank { "无法打开安装器" } }
+        }
+    }
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            updateManager.checkDailyForUpdateIfNeeded().getOrNull()
+        val info = withContext(Dispatchers.IO) {
+            updateManager.checkDailyForUpdateIfNeeded().getOrNull() ?: updateManager.latestAvailableUpdate()
         }
         aboutUpdateAvailable = updateManager.hasAvailableUpdate()
+        if (info != null && updateManager.shouldShowDailyUpdatePrompt()) {
+            updateManager.markDailyUpdatePromptShown()
+            startupUpdateInfo = info
+        }
     }
     LaunchedEffect(safeSelectedPage) {
         if (safeSelectedPage != PAGE_SETTINGS) settingsDetailTitle = null
@@ -324,6 +354,48 @@ internal fun LyraCodeApp(
                 controller.settingsRevision.intValue++
             }
         }
+    }
+
+    startupUpdateInfo?.let { info ->
+        UpdateDialog(
+            info = info,
+            progress = startupUpdateProgress,
+            downloading = startupUpdateDownloading,
+            onDismiss = {
+                if (!startupUpdateDownloading) {
+                    startupUpdateInfo = null
+                    startupUpdateProgress = null
+                }
+            },
+            onOpenWeb = {
+                val target = info.webUrl.ifBlank { info.apkUrl }
+                if (target.isNotBlank()) runCatching { uriHandler.openUri(target) }
+            },
+            onDownload = {
+                if (startupUpdateDownloading) return@UpdateDialog
+                startupUpdateDownloading = true
+                startupUpdateProgress = UpdateDownloadProgress(status = "准备下载")
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        updateManager.downloadApk(info) { progress -> startupUpdateProgress = progress }
+                    }
+                    startupUpdateDownloading = false
+                    result.fold(
+                        onSuccess = { apk ->
+                            startupPendingApk = apk
+                            aboutUpdateAvailable = true
+                            appNotice = "下载完成，准备安装"
+                            openStartupInstaller(apk)
+                        },
+                        onFailure = {
+                            val message = it.message.orEmpty().ifBlank { "下载失败" }
+                            startupUpdateProgress = UpdateDownloadProgress(status = message)
+                            appNotice = message
+                        },
+                    )
+                }
+            },
+        )
     }
 
     ModalNavigationDrawer(
@@ -1352,6 +1424,7 @@ internal fun saveCroppedAvatar(context: Context, uri: Uri, zoom: Float, offsetX:
 @Composable
 internal fun ImageCropUploadDialog(
     uri: Uri,
+    fixedCropAspectRatio: Float? = null,
     onDismiss: () -> Unit,
     onUseOriginal: () -> Unit,
     onCropped: (Uri) -> Unit,
@@ -1359,11 +1432,17 @@ internal fun ImageCropUploadDialog(
     val context = LocalContext.current
     val original = remember(uri) { decodeBitmap(context, uri) }
     var bitmap by remember(uri) { mutableStateOf(original) }
+    val normalizedFixedAspect = remember(bitmap, fixedCropAspectRatio) {
+        val target = fixedCropAspectRatio?.coerceIn(0.2f, 5f)
+        val imageAspect = bitmap?.let { it.width.toFloat() / it.height.toFloat().coerceAtLeast(1f) } ?: 1f
+        target?.let { (it / imageAspect).coerceIn(0.08f, 12f) }
+    }
     var mode by remember { mutableStateOf(ImageEditMode.Crop) }
     var cropLeft by rememberSaveable(uri.toString()) { mutableStateOf(0.08f) }
     var cropTop by rememberSaveable(uri.toString()) { mutableStateOf(0.08f) }
     var cropWidth by rememberSaveable(uri.toString()) { mutableStateOf(0.84f) }
     var cropHeight by rememberSaveable(uri.toString()) { mutableStateOf(0.84f) }
+    var appliedFixedAspect by rememberSaveable(uri.toString()) { mutableStateOf(-1f) }
     var brushColor by remember { mutableStateOf(Color(0xFFE53935)) }
     var brushWidth by remember { mutableStateOf(0.014f) }
     var strokes by remember(uri) { mutableStateOf<List<ImageEditStroke>>(emptyList()) }
@@ -1371,6 +1450,24 @@ internal fun ImageCropUploadDialog(
     var activeStroke by remember { mutableStateOf<ImageEditStroke?>(null) }
     var cropDragMode by remember { mutableStateOf("move") }
     val currentCropState = rememberUpdatedState(CropRectState(cropLeft, cropTop, cropWidth, cropHeight))
+    fun resetCropRect() {
+        val rect = initialCropRectForAspect(normalizedFixedAspect)
+        cropLeft = rect.left
+        cropTop = rect.top
+        cropWidth = rect.width
+        cropHeight = rect.height
+    }
+    LaunchedEffect(normalizedFixedAspect) {
+        val aspect = normalizedFixedAspect
+        if (aspect != null && abs(appliedFixedAspect - aspect) > 0.001f) {
+            val rect = initialCropRectForAspect(aspect)
+            cropLeft = rect.left
+            cropTop = rect.top
+            cropWidth = rect.width
+            cropHeight = rect.height
+            appliedFixedAspect = aspect
+        }
+    }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
@@ -1485,10 +1582,13 @@ internal fun ImageCropUploadDialog(
                                                 totalDy,
                                                 cropDragMode,
                                             )
-                                            cropLeft = updated.left
-                                            cropTop = updated.top
-                                            cropWidth = updated.width
-                                            cropHeight = updated.height
+                                            val adjusted = normalizedFixedAspect
+                                                ?.let { constrainCropRectAspect(updated, it) }
+                                                ?: updated
+                                            cropLeft = adjusted.left
+                                            cropTop = adjusted.top
+                                            cropWidth = adjusted.width
+                                            cropHeight = adjusted.height
                                         } else {
                                             val point = normalizedEditPoint(change.position, size.width.toFloat(), size.height.toFloat())
                                             activeStroke = activeStroke?.copy(points = activeStroke!!.points + point)
@@ -1514,18 +1614,12 @@ internal fun ImageCropUploadDialog(
                 onBrushWidthChange = { brushWidth = it },
                 onRotate = {
                     bitmap = bitmap?.let { rotateBitmap90(it) }
-                    cropLeft = 0.08f
-                    cropTop = 0.08f
-                    cropWidth = 0.84f
-                    cropHeight = 0.84f
+                    resetCropRect()
                     strokes = emptyList()
                     redoStack = emptyList()
                 },
                 onReset = {
-                    cropLeft = 0.08f
-                    cropTop = 0.08f
-                    cropWidth = 0.84f
-                    cropHeight = 0.84f
+                    resetCropRect()
                     strokes = emptyList()
                     redoStack = emptyList()
                     bitmap = original
@@ -1718,6 +1812,52 @@ internal fun updateCropRect(left: Float, top: Float, width: Float, height: Float
         else -> move()
     }
     return CropRectState(l.coerceIn(0f, 1f - w), t.coerceIn(0f, 1f - h), w.coerceIn(minSize, 1f), h.coerceIn(minSize, 1f))
+}
+
+internal fun initialCropRectForAspect(aspect: Float?): CropRectState {
+    val target = aspect?.coerceIn(0.08f, 12f) ?: 1f
+    val maxSize = 0.86f
+    val minSize = 0.12f
+    val (width, height) = if (target >= 1f) {
+        val width = maxSize
+        val height = (width / target).coerceIn(minSize, maxSize)
+        width to height
+    } else {
+        val height = maxSize
+        val width = (height * target).coerceIn(minSize, maxSize)
+        width to height
+    }
+    return CropRectState(
+        left = ((1f - width) / 2f).coerceIn(0f, 1f - width),
+        top = ((1f - height) / 2f).coerceIn(0f, 1f - height),
+        width = width,
+        height = height,
+    )
+}
+
+internal fun constrainCropRectAspect(rect: CropRectState, aspect: Float): CropRectState {
+    val minSize = 0.12f
+    val target = aspect.coerceIn(0.08f, 12f)
+    val centerX = rect.left + rect.width / 2f
+    val centerY = rect.top + rect.height / 2f
+    var width = rect.width.coerceIn(minSize, 1f)
+    var height = rect.height.coerceIn(minSize, 1f)
+    if (width / height > target) {
+        width = height * target
+    } else {
+        height = width / target
+    }
+    if (width > 1f) {
+        width = 1f
+        height = (width / target).coerceIn(minSize, 1f)
+    }
+    if (height > 1f) {
+        height = 1f
+        width = (height * target).coerceIn(minSize, 1f)
+    }
+    val left = (centerX - width / 2f).coerceIn(0f, 1f - width)
+    val top = (centerY - height / 2f).coerceIn(0f, 1f - height)
+    return CropRectState(left, top, width, height)
 }
 
 internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCropOverlay(left: Float, top: Float, width: Float, height: Float, canvasSize: Size) {

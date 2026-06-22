@@ -264,6 +264,10 @@ class AppSettings(context: Context) {
         get() = plainPrefs.getString(KEY_USER_AVATAR_PATH, null)
         set(value) = plainPrefs.edit().putString(KEY_USER_AVATAR_PATH, value).apply()
 
+    var chatBackgroundPath: String?
+        get() = plainPrefs.getString(KEY_CHAT_BACKGROUND_PATH, null)
+        set(value) = plainPrefs.edit().putString(KEY_CHAT_BACKGROUND_PATH, value).apply()
+
     var hideTermuxPermissionHint: Boolean
         get() = plainPrefs.getBoolean(KEY_HIDE_TERMUX_PERMISSION_HINT, false)
         set(value) = plainPrefs.edit().putBoolean(KEY_HIDE_TERMUX_PERMISSION_HINT, value).apply()
@@ -821,6 +825,27 @@ class AppSettings(context: Context) {
         target.absolutePath
     }
 
+    fun saveChatBackground(uri: Uri): Result<String> = runCatching {
+        val dir = File(appContext.filesDir, "chat_background").apply { mkdirs() }
+        dir.listFiles()?.forEach { file ->
+            if (file.isFile) file.delete()
+        }
+        val target = File(dir, "background_${System.currentTimeMillis()}.jpg")
+        appContext.contentResolver.openInputStream(uri)?.use { input ->
+            target.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("无法读取背景图片")
+        chatBackgroundPath = target.absolutePath
+        target.absolutePath
+    }
+
+    fun clearChatBackground() {
+        chatBackgroundPath?.let { path -> runCatching { File(path).delete() } }
+        File(appContext.filesDir, "chat_background").listFiles()?.forEach { file ->
+            if (file.isFile) file.delete()
+        }
+        chatBackgroundPath = null
+    }
+
     fun updateRoleplayNickname(id: String, nickname: String) {
         val meta = roleplayMeta(id)
         meta.put("aiNickname", nickname.trim().ifBlank { meta.optString("name").ifBlank { "Lyra" } }.take(30))
@@ -1147,6 +1172,7 @@ class AppSettings(context: Context) {
             .put("customSuCommand", customSuCommand)
             .put("userNickname", userNickname)
             .put("userAvatarPath", userAvatarPath.orEmpty())
+            .put("chatBackgroundPath", chatBackgroundPath.orEmpty())
             .put("hideTermuxPermissionHint", hideTermuxPermissionHint)
             .put("immersiveRoleplayEnabled", immersiveRoleplayEnabled)
             .put("selectedRoleplayId", selectedRoleplayId)
@@ -1236,6 +1262,7 @@ class AppSettings(context: Context) {
         root.optString("customSuCommand").takeIf { it.isNotBlank() }?.let { customSuCommand = it }
         root.optString("userNickname").takeIf { it.isNotBlank() }?.let { userNickname = it }
         root.optString("userAvatarPath").takeIf { it.isNotBlank() }?.let { userAvatarPath = it }
+        root.optString("chatBackgroundPath").takeIf { it.isNotBlank() }?.let { chatBackgroundPath = it }
         if (root.has("hideTermuxPermissionHint")) hideTermuxPermissionHint = root.optBoolean("hideTermuxPermissionHint")
         if (root.has("immersiveRoleplayEnabled")) immersiveRoleplayEnabled = root.optBoolean("immersiveRoleplayEnabled")
         root.optString("selectedRoleplayId").takeIf { it.isNotBlank() }?.let { selectedRoleplayId = it }
@@ -1809,6 +1836,7 @@ class AppSettings(context: Context) {
         private const val KEY_CUSTOM_SU_COMMAND = "custom_su_command"
         private const val KEY_USER_NICKNAME = "user_nickname"
         private const val KEY_USER_AVATAR_PATH = "user_avatar_path"
+        private const val KEY_CHAT_BACKGROUND_PATH = "chat_background_path"
         private const val KEY_HIDE_TERMUX_PERMISSION_HINT = "hide_termux_permission_hint"
         private const val KEY_DISABLED_TOOLS = "disabled_tools"
         private const val KEY_HIDDEN_TODO_SIGNATURE_PREFIX = "hidden_todo_signature_"
