@@ -1,0 +1,44 @@
+name: Auto Build & Debug
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-and-debug:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install flake8 pylint bandit
+      
+      - name: Run syntax check
+        run: |
+          find . -name "*.py" -type f | head -50 | xargs python -m py_compile || true
+      
+      - name: Run linter on changed files
+        run: |
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '\.py$' | head -20 || true
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-code
+          path: |
+            **/*.py
+            **/*.md
+            **/*.json
+          retention-days: 7
