@@ -22,10 +22,13 @@ jobs:
           distribution: 'temurin'
           java-version: '21' 
           cache: 'gradle' 
-
+          
       - name: Make Gradle Executable
         run: chmod +x ./gradlew
-
+      - name: Create Missing Server Key
+        run: |
+          mkdir -p app/src/main/res/raw
+          touch app/src/main/res/raw/lyra_mini_server
       # 'assembleDebug' is the default task for 99% of Android apps.
       # The -Pandroid.injected.abi flag keeps it locked to 32-bit ARM.
       - name: Build APK (armeabi-v7a only)
