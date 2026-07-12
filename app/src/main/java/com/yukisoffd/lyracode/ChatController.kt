@@ -9,6 +9,9 @@ import androidx.compose.runtime.State
 import com.yukisoffd.lyracode.ai.ChatRecord
 import com.yukisoffd.lyracode.ai.ChatUpdate
 import com.yukisoffd.lyracode.ai.OpenAiAgent
+import com.yukisoffd.lyracode.ai.ModelReachabilityResult
+import com.yukisoffd.lyracode.ai.ProviderReachabilityReport
+import com.yukisoffd.lyracode.ai.ProviderReachabilityResult
 import com.yukisoffd.lyracode.ai.ToolApprovalDecision
 import com.yukisoffd.lyracode.ai.ToolApprovalRequest
 import com.yukisoffd.lyracode.ai.TodoItem
@@ -16,9 +19,12 @@ import com.yukisoffd.lyracode.ai.toRecord
 import com.yukisoffd.lyracode.data.ApiProfile
 import com.yukisoffd.lyracode.data.AppSettings
 import com.yukisoffd.lyracode.data.Conversation
+import android.content.Context
 import com.yukisoffd.lyracode.data.ConversationStore
 import com.yukisoffd.lyracode.workspace.UploadedFile
 import com.yukisoffd.lyracode.workspace.UploadedFileManager
+import com.yukisoffd.lyracode.workspace.WorkspaceManager
+import com.yukisoffd.lyracode.workspace.WorkspaceFileReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,6 +34,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 data class PendingToolApproval(
     val id: Long,
@@ -35,9 +42,11 @@ data class PendingToolApproval(
 )
 
 class ChatController(
+    private val appContext: Context,
     private val settings: AppSettings,
     private val conversationStore: ConversationStore,
     private val uploadedFileManager: UploadedFileManager,
+    private val workspaceManager: WorkspaceManager,
     private val agent: OpenAiAgent,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -60,6 +69,8 @@ class ChatController(
     private var approvalId = 0L
     private val approvalWaiters = mutableMapOf<Long, CompletableDeferred<ToolApprovalDecision>>()
     private val autoApprovedConversations = mutableSetOf<Long>()
+    private var transientWorkspaceUri = ""
+    private var transientAutoApprovalEnabled = false
     private val todoByConversation = mutableMapOf<Long, MutableList<TodoItem>>()
 
     init {
@@ -85,6 +96,23 @@ class ChatController(
     }
 
     fun usageStore(): ConversationStore = conversationStore
+    fun inputDraftKey(): String {
+        return if (isRoleplayMode()) {
+            "roleplay:${currentRoleplayId()}:${activeConversationId.value}"
+        } else {
+            "normal:${activeConversationId.value}"
+        }
+    }
+
+    fun loadInputDraft(): String = settings.chatInputDraft(inputDraftKey())
+
+    fun saveInputDraft(text: String) {
+        settings.setChatInputDraft(inputDraftKey(), text)
+    }
+
+    fun clearInputDraft() {
+        settings.setChatInputDraft(inputDraftKey(), "")
+    }
 
     fun reloadProfiles() {
         profiles.clear()
@@ -157,11 +185,13 @@ class ChatController(
         val id = conversationStore.createConversation(
             profileId = profile.id,
             model = activeModel.value.ifBlank { profile.selectedModel },
-            title = if (isRoleplayMode()) settings.roleplayScenarios().firstOrNull { it.id == roleplayId }?.name ?: "沉浸对话" else "新对话",
+            title = if (isRoleplayMode()) settings.roleplayScenarios().firstOrNull { it.id == roleplayId }?.name ?: appContext.getString(R.string.title_immersive_chat) else appContext.getString(R.string.title_new_chat),
             mode = if (isRoleplayMode()) ConversationStore.MODE_ROLEPLAY else ConversationStore.MODE_NORMAL,
             roleplayId = roleplayId,
+            workspaceUri = transientWorkspaceUri,
         )
         todoByConversation[id] = mutableListOf()
+        if (transientAutoApprovalEnabled) autoApprovedConversations += id
         reloadConversations()
         selectConversation(id)
         return id
@@ -174,6 +204,10 @@ class ChatController(
         pendingUploads.clear()
         uploadingStatus.value = ""
         status.value = ""
+        transientWorkspaceUri = ""
+        transientAutoApprovalEnabled = false
+        workspaceManager.setActiveWorkspaceUri("")
+        settingsRevision.intValue++
     }
 
     fun requestNewConversation(): Boolean {
@@ -190,6 +224,7 @@ class ChatController(
         if (conversation != null) {
             activeProfileId.value = conversation.profileId.ifBlank { activeProfileId.value }
             activeModel.value = conversation.model.ifBlank { activeModel.value }
+            workspaceManager.setActiveWorkspaceUri(conversation.workspaceUri)
         }
         reloadMessages()
         reloadTodos()
@@ -212,6 +247,40 @@ class ChatController(
     fun renameConversation(id: Long, title: String) {
         conversationStore.setConversationMeta(id, title = title)
         reloadConversations()
+    }
+
+    fun persistWorkspaceForActiveSession(uri: Uri): String {
+        val workspaceUri = workspaceManager.persistWorkspace(uri)
+        val conversationId = activeConversationId.value
+        if (conversationId > 0L) {
+            conversationStore.setConversationMeta(conversationId, workspaceUri = workspaceUri)
+            reloadConversations()
+        } else {
+            transientWorkspaceUri = workspaceUri
+        }
+        settingsRevision.intValue++
+        return workspaceManager.displayName()
+    }
+
+    fun workspaceDisplayName(): String = workspaceManager.displayName()
+
+    fun hasWorkspace(): Boolean = workspaceManager.rootUri() != null
+
+    fun searchWorkspaceFiles(query: String): List<WorkspaceFileReference> = workspaceManager.searchFiles(query)
+
+    fun isAutoApprovalEnabledForActiveSession(): Boolean {
+        val conversationId = activeConversationId.value
+        return if (conversationId > 0L) conversationId in autoApprovedConversations else transientAutoApprovalEnabled
+    }
+
+    fun setAutoApprovalForActiveSession(enabled: Boolean) {
+        val conversationId = activeConversationId.value
+        if (conversationId > 0L) {
+            if (enabled) autoApprovedConversations += conversationId else autoApprovedConversations -= conversationId
+        } else {
+            transientAutoApprovalEnabled = enabled
+        }
+        settingsRevision.intValue++
     }
 
     fun setConversationPinned(id: Long, pinned: Boolean) {
@@ -242,23 +311,34 @@ class ChatController(
         reloadConversations()
     }
 
-    fun send(text: String) {
+    fun send(text: String, forcedSkillIds: List<String> = emptyList(), workspaceFiles: List<WorkspaceFileReference> = emptyList()) {
         val uploads = pendingUploads.toList()
-        if (text.isBlank() && uploads.isEmpty()) return
+        if (text.isBlank() && uploads.isEmpty() && workspaceFiles.isEmpty()) return
         val conversationId = activeConversationId.value.takeIf { it > 0 } ?: createPersistedConversation()
+        conversationStore.conversation(conversationId)?.let { workspaceManager.setActiveWorkspaceUri(it.workspaceUri) }
         if (jobs[conversationId]?.isActive == true) return
-        val profile = currentProfile()
+       val profile = currentProfile()
         val model = activeModel.value.ifBlank { profile.selectedModel }
-        val userInput = composeUserInput(text, uploads)
-        if (activeConversation()?.title == "新对话") {
-            conversationStore.setConversationMeta(conversationId, title = fallbackConversationTitle(userInput))
-            reloadConversations()
-        }
+        val userInput = composeUserInput(text, uploads, workspaceFiles)
+        conversationStore.setConversationMeta(
+            conversationId,
+            title = if (activeConversation()?.title == appContext.getString(R.string.default_conversation_title)) {
+                fallbackConversationTitle(userInput)
+            } else {
+                null
+            },
+            status = ConversationStore.STATUS_RUNNING,
+            profileId = profile.id,
+            model = model,
+        )
+        conversationStore.addMessage(conversationId, "user", userInput, profileId = profile.id, model = model)
+        reloadMessages()
+        reloadConversations()
         pendingUploads.clear()
         uploadingStatus.value = ""
         jobs[conversationId] = scope.launch {
-            status.value = "运行中"
-            agent.chat(conversationId, userInput, profile, model) {
+            status.value = appContext.getString(R.string.status_running)
+            agent.chat(conversationId, userInput, profile, model, userMessagePersisted = true, forcedSkillIds = forcedSkillIds) {
                 withContext(Dispatchers.Main) {
                     applyChatUpdate(it)
                     status.value = it.status
@@ -276,22 +356,23 @@ class ChatController(
         conversationStore.setConversationMeta(conversationId, status = ConversationStore.STATUS_INTERRUPTED)
         pendingToolApproval.value?.takeIf { it.request.conversationId == conversationId }?.let { pending ->
             approvalWaiters.remove(pending.id)?.complete(
-                ToolApprovalDecision(approved = false, feedback = "用户中断了当前任务。"),
+                ToolApprovalDecision(approved = false, feedback = appContext.getString(R.string.label_user_interrupted)),
             )
             pendingToolApproval.value = null
         }
         reloadConversations()
         reloadMessages()
-        status.value = "已中断"
+        status.value = appContext.getString(R.string.status_interrupted)
     }
 
     fun continueActive() {
         val conversationId = activeConversationId.value.takeIf { it > 0 } ?: return
         if (jobs[conversationId]?.isActive == true) return
+        conversationStore.conversation(conversationId)?.let { workspaceManager.setActiveWorkspaceUri(it.workspaceUri) }
         val profile = currentProfile()
         val model = activeModel.value.ifBlank { profile.selectedModel }
         jobs[conversationId] = scope.launch {
-            status.value = "继续运行"
+            status.value = appContext.getString(R.string.status_continue)
             agent.continueConversation(conversationId, profile, model) {
                 withContext(Dispatchers.Main) {
                     applyChatUpdate(it)
@@ -309,6 +390,7 @@ class ChatController(
         if (jobs[conversationId]?.isActive == true) return
         val message = conversationStore.message(messageId) ?: return
         if (message.conversationId != conversationId || message.role != "user") return
+        conversationStore.conversation(conversationId)?.let { workspaceManager.setActiveWorkspaceUri(it.workspaceUri) }
         val content = newContent.trim().ifBlank { message.content }
         conversationStore.updateMessage(messageId, content = content, thinking = "")
         conversationStore.deleteMessagesAfter(conversationId, messageId)
@@ -317,7 +399,7 @@ class ChatController(
         val profile = currentProfile()
         val model = activeModel.value.ifBlank { profile.selectedModel }
         jobs[conversationId] = scope.launch {
-            status.value = "重新生成"
+            status.value = appContext.getString(R.string.status_regenerate)
             agent.continueConversation(conversationId, profile, model) {
                 withContext(Dispatchers.Main) {
                     applyChatUpdate(it)
@@ -331,10 +413,10 @@ class ChatController(
     }
 
     private fun markConversationFinished(conversationId: Long) {
-        status.value = "完成"
+        status.value = appContext.getString(R.string.status_done)
         scope.launch {
             delay(2400L)
-            if (activeConversationId.value == conversationId && jobs[conversationId]?.isActive != true && status.value == "完成") {
+            if (activeConversationId.value == conversationId && jobs[conversationId]?.isActive != true && status.value == appContext.getString(R.string.status_done)) {
                 status.value = ""
             }
         }
@@ -342,12 +424,12 @@ class ChatController(
 
     fun attachUploadedFile(uri: Uri) {
         scope.launch {
-            uploadingStatus.value = "读取上传文件"
+            uploadingStatus.value = appContext.getString(R.string.status_reading_upload)
             val result = withContext(Dispatchers.IO) { uploadedFileManager.readText(uri) }
             result.fold(
                 onSuccess = { file ->
                     pendingUploads += file
-                    uploadingStatus.value = "已上传 ${file.name}"
+                    uploadingStatus.value = appContext.getString(R.string.status_uploaded, file.name)
                 },
                 onFailure = { uploadingStatus.value = it.message.orEmpty() },
             )
@@ -356,12 +438,12 @@ class ChatController(
 
     fun attachCapturedImage(bitmap: Bitmap) {
         scope.launch {
-            uploadingStatus.value = "处理拍照图片"
+            uploadingStatus.value = appContext.getString(R.string.status_processing_photo)
             val result = withContext(Dispatchers.IO) { uploadedFileManager.saveCapturedImage(bitmap) }
             result.fold(
                 onSuccess = { file ->
                     pendingUploads += file
-                    uploadingStatus.value = "已上传 ${file.name}"
+                    uploadingStatus.value = appContext.getString(R.string.status_uploaded, file.name)
                 },
                 onFailure = { uploadingStatus.value = it.message.orEmpty() },
             )
@@ -371,49 +453,84 @@ class ChatController(
     fun removePendingUpload(index: Int) {
         pendingUploads.getOrNull(index) ?: return
         pendingUploads.removeAt(index)
-        uploadingStatus.value = if (pendingUploads.isEmpty()) "" else "待发送 ${pendingUploads.size} 个附件"
+        uploadingStatus.value = if (pendingUploads.isEmpty()) "" else appContext.getString(R.string.label_pending_attachments, pendingUploads.size)
     }
 
-    private fun composeUserInput(text: String, uploads: List<UploadedFile>): String {
+    private fun composeUserInput(text: String, uploads: List<UploadedFile>, workspaceFiles: List<WorkspaceFileReference> = emptyList()): String {
         return buildString {
             val cleanText = text.trim()
             if (cleanText.isNotBlank()) append(cleanText)
+            workspaceFiles.distinctBy { it.relativePath }.take(24).takeIf { it.isNotEmpty() }?.let { files ->
+                if (isNotBlank()) append("\n\n")
+                append(workspaceReferenceMarker(files))
+            }
             uploads.forEach { file ->
                 if (isNotBlank()) append("\n\n")
-                if (file.mediaKind == "text") {
-                    append("用户上传文件：").append(file.name).append('\n')
-                    append("大小：").append(file.size).append(" bytes\n\n")
-                    append("```text\n")
-                    append(file.content)
-                    append("\n```")
-                } else {
-                    append("用户上传媒体：").append(file.name).append('\n')
-                    append("类型：").append(file.mediaKind).append('\n')
-                    append("MIME：").append(file.mimeType).append('\n')
-                    if (file.content.startsWith("data:", ignoreCase = true)) {
-                        append("DATA_URL：").append(file.content).append('\n')
-                    }
-                    append("URI：").append(file.uri).append('\n')
-                    append("大小：").append(file.size).append(" bytes")
-                }
+                append(uploadedAttachmentMarker(file))
             }
         }
     }
 
+
+    private fun workspaceReferenceMarker(files: List<WorkspaceFileReference>): String {
+        val payload = JSONObject()
+            .put("instruction", "优先读取并处理这些用户明确选中的工作区文件；路径均为工作区相对路径。")
+            .put("files", org.json.JSONArray().also { array ->
+                files.forEach { file ->
+                    array.put(JSONObject().put("name", file.name).put("path", file.relativePath).put("size", file.size))
+                }
+            })
+        return "$WORKSPACE_REFERENCE_MARKER_START$payload$WORKSPACE_REFERENCE_MARKER_END"
+    }
+
+    private fun uploadedAttachmentMarker(file: UploadedFile): String {
+        val payload = JSONObject()
+            .put("name", file.name)
+            .put("kind", file.mediaKind)
+            .put("mime_type", file.mimeType)
+            .put("size", file.size)
+            .put("uri", file.uri)
+        if (file.mediaKind == "text") {
+            payload.put("text", file.content)
+        } else if (file.content.startsWith("data:", ignoreCase = true)) {
+            payload.put("data_url", file.content)
+        }
+        return "$ATTACHMENT_MARKER_START$payload$ATTACHMENT_MARKER_END"
+    }
+
+    private companion object {
+        const val ATTACHMENT_MARKER_START = "<lyra_attachment_v1>"
+        const val ATTACHMENT_MARKER_END = "</lyra_attachment_v1>"
+        const val WORKSPACE_REFERENCE_MARKER_START = "<lyra_workspace_refs_v1>"
+        const val WORKSPACE_REFERENCE_MARKER_END = "</lyra_workspace_refs_v1>"
+    }
     private fun fallbackConversationTitle(userInput: String): String {
-        return userInput.lineSequence()
+        val markerRegex = Regex("<lyra_attachment_v1>([\\s\\S]*?)</lyra_attachment_v1>")
+        val workspaceRegex = Regex("<lyra_workspace_refs_v1>([\\s\\S]*?)</lyra_workspace_refs_v1>")
+        val workspaceTitle = workspaceRegex.find(userInput)?.let { match ->
+            runCatching { JSONObject(match.groupValues[1]).optJSONArray("files")?.optJSONObject(0)?.optString("name") }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { "@$it" }
+        }
+        val attachmentTitle = markerRegex.find(userInput)?.let { match ->
+            runCatching { JSONObject(match.groupValues[1]).optString("name") }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { "上传附件：$it" }
+        }
+        return workspaceRegex.replace(markerRegex.replace(userInput, ""), "")
+            .lineSequence()
             .firstOrNull()
             .orEmpty()
             .replace(Regex("""\s+"""), " ")
             .trim()
             .take(36)
-            .ifBlank { "新对话" }
+            .ifBlank { workspaceTitle ?: attachmentTitle ?: appContext.getString(R.string.default_conversation_title) }
     }
 
     fun fetchModels(onDone: (Result<List<String>>) -> Unit) {
         val profile = currentProfile()
         scope.launch {
-            status.value = "获取模型列表"
+            status.value = appContext.getString(R.string.status_fetching_models)
             val result = withContext(Dispatchers.IO) { agent.fetchModels(profile) }
             result.onSuccess { models ->
                 val updated = profiles.map {
@@ -428,9 +545,50 @@ class ChatController(
         }
     }
 
+
+    fun checkReachabilityForProfile(profile: ApiProfile, models: List<String>, onDone: (Result<ProviderReachabilityReport>) -> Unit) {
+        scope.launch {
+            status.value = appContext.getString(R.string.status_checking_reachability)
+            val result = withContext(Dispatchers.IO) {
+                runCatching { agent.checkReachability(profile, models) }
+            }
+            status.value = ""
+            onDone(result)
+        }
+    }
+
+    fun checkReachabilityForProfileIncremental(
+        profile: ApiProfile,
+        models: List<String>,
+        onProviderResult: (ProviderReachabilityResult) -> Unit,
+        onModelChecking: (String) -> Unit = {},
+        onModelResult: (ModelReachabilityResult) -> Unit,
+        onDone: (Result<Unit>) -> Unit,
+    ) {
+        scope.launch {
+            status.value = appContext.getString(R.string.status_checking_reachability)
+            val result = runCatching {
+                val targets = models
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .ifEmpty { listOf(profile.selectedModel) }
+                    .distinct()
+                val provider = withContext(Dispatchers.IO) { agent.checkProviderReachability(profile) }
+                onProviderResult(provider)
+                targets.forEach { model ->
+                    onModelChecking(model)
+                    val modelResult = withContext(Dispatchers.IO) { agent.checkModelReachability(profile, model) }
+                    onModelResult(modelResult)
+                }
+            }
+            status.value = ""
+            onDone(result)
+        }
+    }
+
     fun fetchModelsForProfile(profile: ApiProfile, onDone: (Result<List<String>>) -> Unit) {
         scope.launch {
-            status.value = "获取模型列表"
+            status.value = appContext.getString(R.string.status_fetching_models)
             val result = withContext(Dispatchers.IO) { agent.fetchModels(profile) }
             status.value = ""
             onDone(result)
@@ -450,6 +608,7 @@ class ChatController(
             if (next == null) {
                 activeConversationId.value = 0L
                 _messages.value = emptyList()
+                workspaceManager.setActiveWorkspaceUri("")
             } else {
                 selectConversation(next)
             }
@@ -458,10 +617,47 @@ class ChatController(
 
     fun reloadMessages() {
         val id = activeConversationId.value
-        _messages.value = if (id <= 0) emptyList() else conversationStore.messages(id).map { it.toRecord() }
+        _messages.value = if (id <= 0) {
+            emptyList()
+        } else {
+            enrichToolRecords(conversationStore.messages(id).map { it.toRecord() })
+        }
         lastMessageReloadAt = System.currentTimeMillis()
     }
 
+    private fun enrichToolRecords(records: List<ChatRecord>): List<ChatRecord> {
+        val calls = mutableMapOf<String, Pair<String, String>>()
+        return records.map { record ->
+            if (record.role == "assistant") {
+                runCatching { JSONObject(record.rawJson.orEmpty()) }.getOrNull()
+                    ?.optJSONArray("tool_calls")
+                    ?.let { array ->
+                        for (index in 0 until array.length()) {
+                            val call = array.optJSONObject(index) ?: continue
+                            val id = call.optString("id")
+                            val function = call.optJSONObject("function") ?: continue
+                            if (id.isNotBlank()) {
+                                calls[id] = function.optString("name") to prettyToolJson(function.optString("arguments"))
+                            }
+                        }
+                    }
+                record
+            } else if (record.role == "tool") {
+                val details = calls[record.toolCallId]
+                record.copy(toolName = details?.first.orEmpty(), toolInput = details?.second.orEmpty())
+            } else {
+                record
+            }
+        }
+    }
+
+    private fun prettyToolJson(value: String): String {
+        val trimmed = value.trim()
+        if (trimmed.isBlank()) return "{}"
+        return runCatching { JSONObject(trimmed).toString(2) }
+            .recoverCatching { org.json.JSONArray(trimmed).toString(2) }
+            .getOrDefault(trimmed)
+    }
     fun reloadTodos() {
         todoItems.clear()
         todoItems.addAll(todoByConversation[activeConversationId.value].orEmpty())
@@ -493,7 +689,7 @@ class ChatController(
             autoApprovedConversations += pending.request.conversationId
         }
         pendingToolApproval.value = null
-        status.value = if (approved) "已批准工具调用" else "已拒绝工具调用"
+        status.value = if (approved) appContext.getString(R.string.status_approved_tool) else appContext.getString(R.string.status_rejected_tool)
     }
 
     private fun currentProfile(): ApiProfile {
@@ -546,7 +742,11 @@ class ChatController(
             reloadMessages()
             return
         }
-        val updated = current[index].copy(content = update.content, thinking = update.thinking)
+        val updated = current[index].copy(
+            content = update.content,
+            thinking = update.thinking,
+            tokensPerSecond = update.tokensPerSecond.takeIf { value -> value > 0.0 } ?: current[index].tokensPerSecond,
+        )
         _messages.value = current.toMutableList().also { it[index] = updated }
         lastMessageReloadAt = System.currentTimeMillis()
         if (update.status.startsWith("工具完成")) {
@@ -562,13 +762,13 @@ class ChatController(
             val waiter = CompletableDeferred<ToolApprovalDecision>()
             approvalWaiters[id] = waiter
             pendingToolApproval.value = PendingToolApproval(id, request)
-            status.value = "等待确认: ${request.toolName}"
+            status.value = appContext.getString(R.string.status_waiting_confirm, request.toolName)
             waiter
         }.await()
     }
 
     private suspend fun setTodos(conversationId: Long, items: List<TodoItem>): String = withContext(Dispatchers.Main) {
-        val normalized = items.ifEmpty { listOf(TodoItem("1", "完成当前任务", "pending")) }
+        val normalized = items.ifEmpty { listOf(TodoItem("1", appContext.getString(R.string.todo_default_task), "pending")) }
             .mapIndexed { index, item ->
                 item.copy(
                     id = item.id.ifBlank { (index + 1).toString() },
@@ -578,7 +778,7 @@ class ChatController(
             .toMutableList()
         todoByConversation[conversationId] = normalized
         if (activeConversationId.value == conversationId) reloadTodos()
-        "TODO 列表已设置，共 ${normalized.size} 项。"
+        appContext.getString(R.string.todo_list_set, normalized.size)
     }
 
     private suspend fun updateTodo(conversationId: Long, id: String, status: String, note: String): String = withContext(Dispatchers.Main) {
@@ -590,10 +790,10 @@ class ChatController(
                 note = note.ifBlank { list[index].note },
             )
         } else {
-            list += TodoItem(id.ifBlank { (list.size + 1).toString() }, note.ifBlank { "未命名步骤" }, status.ifBlank { "completed" })
+            list += TodoItem(id.ifBlank { (list.size + 1).toString() }, note.ifBlank { appContext.getString(R.string.todo_item_default_name) }, status.ifBlank { appContext.getString(R.string.todo_status_completed) })
         }
         if (activeConversationId.value == conversationId) reloadTodos()
-        "TODO ${id.ifBlank { list.last().id }} 已标记为 ${status.ifBlank { "completed" }}。"
+        appContext.getString(R.string.todo_marked_as, id.ifBlank { list.last().id }, status.ifBlank { appContext.getString(R.string.todo_status_completed) })
     }
 
     private fun markAbandonedRunsInterrupted() {

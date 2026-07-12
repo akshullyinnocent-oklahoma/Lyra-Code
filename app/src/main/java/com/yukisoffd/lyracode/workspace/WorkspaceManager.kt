@@ -9,15 +9,33 @@ import com.yukisoffd.lyracode.data.AppSettings
 
 class WorkspaceManager(
     private val context: Context,
-    private val settings: AppSettings,
+    @Suppress("unused") private val settings: AppSettings,
 ) {
-    fun persistWorkspace(uri: Uri) {
+    private var activeWorkspaceUri: String = ""
+    private val fileIndexer by lazy { WorkspaceFileIndexer(context, this) }
+
+    fun persistWorkspace(uri: Uri): String {
         val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         context.contentResolver.takePersistableUriPermission(uri, flags)
-        settings.workspaceUri = uri.toString()
+        val nextUri = uri.toString()
+        if (activeWorkspaceUri != nextUri) {
+            activeWorkspaceUri = nextUri
+            fileIndexer.invalidate()
+        }
+        return activeWorkspaceUri
     }
 
-    fun rootUri(): Uri? = settings.workspaceUri?.let(Uri::parse)
+    fun setActiveWorkspaceUri(uri: String?) {
+        val nextUri = uri.orEmpty()
+        if (activeWorkspaceUri != nextUri) {
+            activeWorkspaceUri = nextUri
+            fileIndexer.invalidate()
+        }
+    }
+
+    fun activeWorkspaceUri(): String = activeWorkspaceUri
+
+    fun rootUri(): Uri? = activeWorkspaceUri.takeIf { it.isNotBlank() }?.let(Uri::parse)
 
     fun root(): DocumentFile? {
         val uri = rootUri() ?: return null
@@ -25,6 +43,9 @@ class WorkspaceManager(
     }
 
     fun displayName(): String = root()?.name ?: "未选择工作目录"
+
+    fun searchFiles(query: String, limit: Int = 80): List<WorkspaceFileReference> =
+        fileIndexer.search(query, limit)
 
     fun termuxRootPath(): String? {
         val uri = rootUri() ?: return null

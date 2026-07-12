@@ -15,11 +15,13 @@ import com.yukisoffd.lyracode.data.BackupManager
 import com.yukisoffd.lyracode.data.BackupOptions
 import com.yukisoffd.lyracode.data.ChatMessage
 import com.yukisoffd.lyracode.data.ConversationStore
+import com.yukisoffd.lyracode.data.DeepSeekV3Tokenizer
 import com.yukisoffd.lyracode.data.FileTransferServerConfig
 import com.yukisoffd.lyracode.data.McpServerConfig
 import com.yukisoffd.lyracode.data.McpToolDefinition
 import com.yukisoffd.lyracode.data.MiniServerConfig
 import com.yukisoffd.lyracode.data.SkillPack
+import com.yukisoffd.lyracode.data.SubAgentConfig
 import com.yukisoffd.lyracode.data.SshServerConfig
 import com.yukisoffd.lyracode.data.WebDavServerConfig
 import com.yukisoffd.lyracode.filetransfer.FileTransferClient
@@ -34,6 +36,7 @@ import com.yukisoffd.lyracode.tasks.ScheduledTask
 import com.yukisoffd.lyracode.tasks.ScheduledTaskManager
 import com.yukisoffd.lyracode.tasks.ScheduledTaskType
 import com.yukisoffd.lyracode.termux.TermuxExecutor
+import com.yukisoffd.lyracode.uiText
 import com.yukisoffd.lyracode.webdav.WebDavClient
 import com.yukisoffd.lyracode.workspace.GlobalFileManager
 import com.yukisoffd.lyracode.workspace.NativeFileManager
@@ -52,6 +55,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -62,6 +66,7 @@ import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
@@ -73,6 +78,11 @@ data class ChatRecord(
     val profileId: String = "",
     val model: String = "",
     val createdAt: Long = System.currentTimeMillis(),
+    val tokensPerSecond: Double = 0.0,
+    val toolCallId: String? = null,
+    val rawJson: String? = null,
+    val toolName: String = "",
+    val toolInput: String = "",
 )
 
 data class ChatUpdate(
@@ -80,8 +90,31 @@ data class ChatUpdate(
     val thinking: String,
     val status: String,
     val messageId: Long = 0L,
+    val tokensPerSecond: Double = 0.0,
 )
 
+
+data class ModelReachabilityResult(
+    val model: String,
+    val available: Boolean,
+    val latencyMs: Long,
+    val message: String,
+    val statusCode: Int? = null,
+)
+
+data class ProviderReachabilityResult(
+    val available: Boolean,
+    val latencyMs: Long,
+    val message: String,
+    val statusCode: Int? = null,
+)
+
+data class ProviderReachabilityReport(
+    val providerAvailable: Boolean,
+    val providerLatencyMs: Long,
+    val providerMessage: String,
+    val modelResults: List<ModelReachabilityResult>,
+)
 private data class ToolCall(
     val id: String,
     val name: String,
@@ -106,6 +139,7 @@ private data class StreamingResult(
     val thinking: String,
     val rawMessage: JSONObject,
     val toolCalls: List<ToolCall>,
+    val tokensPerSecond: Double = 0.0,
     val fromCache: Boolean = false,
 )
 
@@ -193,25 +227,43 @@ class OpenAiAgent(
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
+    private val reachabilityClient = client.newBuilder()
+        .readTimeout(20, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+    private val tokenizer by lazy { DeepSeekV3Tokenizer.get(context) }
+    private val forcedSkillsByConversation = ConcurrentHashMap<Long, List<String>>()
 
     suspend fun chat(
         conversationId: Long,
         userInput: String,
         profile: ApiProfile,
         model: String,
+        userMessagePersisted: Boolean = false,
         propagateErrors: Boolean = false,
+        forcedSkillIds: List<String> = emptyList(),
         onUpdate: suspend (ChatUpdate) -> Unit,
     ) = withContext(Dispatchers.IO) {
-        conversationStore.setConversationMeta(
-            conversationId,
-            title = titleFor(conversationId, userInput),
-            status = ConversationStore.STATUS_RUNNING,
-            profileId = profile.id,
-            model = model,
-        )
-        conversationStore.addMessage(conversationId, "user", userInput, profileId = profile.id, model = model)
-        onUpdate(ChatUpdate("", "", "已发送"))
-        runLoop(conversationId, profile, model, onUpdate, propagateErrors)
+        val normalizedForcedSkillIds = forcedSkillIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (normalizedForcedSkillIds.isNotEmpty()) {
+            forcedSkillsByConversation[conversationId] = normalizedForcedSkillIds
+        }
+        try {
+            conversationStore.setConversationMeta(
+                conversationId,
+                title = titleFor(conversationId, userInput),
+                status = ConversationStore.STATUS_RUNNING,
+                profileId = profile.id,
+                model = model,
+            )
+            if (!userMessagePersisted) {
+                conversationStore.addMessage(conversationId, "user", userInput, profileId = profile.id, model = model)
+            }
+            onUpdate(ChatUpdate("", "", uiText("已发送")))
+            runLoop(conversationId, profile, model, onUpdate, propagateErrors)
+        } finally {
+            if (normalizedForcedSkillIds.isNotEmpty()) forcedSkillsByConversation.remove(conversationId)
+        }
     }
 
     suspend fun continueConversation(
@@ -251,6 +303,138 @@ class OpenAiAgent(
             }.distinct().sorted()
         }
     }
+
+    fun checkReachability(profile: ApiProfile, models: List<String>): ProviderReachabilityReport {
+        require(profile.apiKey.isNotBlank()) { "API Key 不能为空" }
+        val targets = models
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .ifEmpty { listOf(profile.selectedModel) }
+            .distinct()
+        val providerResult = checkProviderReachability(profile)
+        val modelResults = targets.map { model -> checkModelReachability(profile, model) }
+        return ProviderReachabilityReport(
+            providerAvailable = providerResult.available,
+            providerLatencyMs = providerResult.latencyMs,
+            providerMessage = providerResult.message,
+            modelResults = modelResults,
+        )
+    }
+
+    fun checkProviderReachability(profile: ApiProfile): ProviderReachabilityResult {
+        require(profile.apiKey.isNotBlank()) { "API Key 不能为空" }
+        val probe = executeReachabilityProbe(providerReachabilityRequest(profile))
+        return ProviderReachabilityResult(
+            available = probe.available,
+            latencyMs = probe.latencyMs,
+            message = probe.message,
+            statusCode = probe.statusCode,
+        )
+    }
+
+    fun checkModelReachability(profile: ApiProfile, model: String): ModelReachabilityResult {
+        require(profile.apiKey.isNotBlank()) { "API Key 不能为空" }
+        val target = model.trim().ifBlank { profile.selectedModel }
+        val probe = executeReachabilityProbe(modelReachabilityRequest(profile, target))
+        return ModelReachabilityResult(
+            model = target,
+            available = probe.available,
+            latencyMs = probe.latencyMs,
+            message = probe.message,
+            statusCode = probe.statusCode,
+        )
+    }
+
+    private fun providerReachabilityRequest(profile: ApiProfile): Request {
+        val builder = Request.Builder().url(profile.modelsEndpoint).get()
+        when (profile.apiFormat) {
+            ApiProfile.API_FORMAT_ANTHROPIC -> builder
+                .addHeader("x-api-key", profile.apiKey)
+                .addHeader("anthropic-version", ANTHROPIC_VERSION)
+            ApiProfile.API_FORMAT_GEMINI -> builder.addHeader("x-goog-api-key", profile.apiKey)
+            else -> builder.addHeader("Authorization", "Bearer ${profile.apiKey}")
+        }
+        return builder.build()
+    }
+
+    private fun modelReachabilityRequest(profile: ApiProfile, model: String): Request {
+        return when (profile.apiFormat) {
+            ApiProfile.API_FORMAT_ANTHROPIC -> {
+                val body = JSONObject()
+                    .put("model", model)
+                    .put("max_tokens", 1)
+                    .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "ping")))
+                    .toString()
+                    .toRequestBody("application/json".toMediaType())
+                Request.Builder()
+                    .url(profile.chatEndpoint)
+                    .addHeader("x-api-key", profile.apiKey)
+                    .addHeader("anthropic-version", ANTHROPIC_VERSION)
+                    .addHeader("Content-Type", "application/json")
+                    .post(body)
+                    .build()
+            }
+            ApiProfile.API_FORMAT_GEMINI -> {
+                val body = JSONObject()
+                    .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "ping")))))
+                    .put("generationConfig", JSONObject().put("maxOutputTokens", 1).put("temperature", 0.0))
+                    .toString()
+                    .toRequestBody("application/json".toMediaType())
+                Request.Builder()
+                    .url(profile.geminiGenerateContentEndpoint(model))
+                    .addHeader("x-goog-api-key", profile.apiKey)
+                    .addHeader("Content-Type", "application/json")
+                    .post(body)
+                    .build()
+            }
+            else -> {
+                val requestJson = JSONObject()
+                    .put("model", model)
+                    .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "ping")))
+                    .put("stream", false)
+                if (modelLooksReasoningCapable(model)) {
+                    requestJson.put("max_completion_tokens", 1)
+                } else {
+                    requestJson.put("max_tokens", 1)
+                }
+                val body = requestJson
+                    .toString()
+                    .toRequestBody("application/json".toMediaType())
+                Request.Builder()
+                    .url(profile.chatEndpoint)
+                    .addHeader("Authorization", "Bearer ${profile.apiKey}")
+                    .addHeader("Content-Type", "application/json")
+                    .post(body)
+                    .build()
+            }
+        }
+    }
+
+    private fun executeReachabilityProbe(request: Request): ReachabilityProbe {
+        val startedAtNanos = System.nanoTime()
+        return try {
+            reachabilityClient.newCall(request).execute().use { response ->
+                val latencyMs = elapsedMs(startedAtNanos)
+                val body = response.body?.string().orEmpty()
+                if (response.isSuccessful) {
+                    ReachabilityProbe(true, response.code, latencyMs, uiText("可用"))
+                } else {
+                    ReachabilityProbe(false, response.code, latencyMs, "HTTP ${response.code}: ${body.cleanProbeMessage()}")
+                }
+            }
+        } catch (error: IOException) {
+            ReachabilityProbe(false, null, elapsedMs(startedAtNanos), error.message.orEmpty().ifBlank { uiText("网络不可达或连接超时") })
+        } catch (error: Throwable) {
+            ReachabilityProbe(false, null, elapsedMs(startedAtNanos), error.message.orEmpty().ifBlank { uiText("检测失败") })
+        }
+    }
+
+    private data class ReachabilityProbe(
+        val available: Boolean,
+        val statusCode: Int?,
+        val latencyMs: Long,
+        val message: String,
+    )
 
     private fun fetchAnthropicModels(profile: ApiProfile): List<String> {
         val requests = listOf(
@@ -345,22 +529,30 @@ class OpenAiAgent(
                 val assistantId = conversationStore.addMessage(conversationId, "assistant", "", profileId = profile.id, model = model)
                 val result = streamModel(conversationId, assistantId, profile, model) { content, thinking ->
                     conversationStore.updateMessage(assistantId, content = content, thinking = thinking)
-                    onUpdate(ChatUpdate(content, thinking, "输出中", assistantId))
+                    onUpdate(ChatUpdate(content, thinking, uiText("输出中"), assistantId))
                 }
                 conversationStore.updateMessage(
                     assistantId,
                     content = result.content,
                     thinking = result.thinking,
                     rawJson = result.rawMessage.toString(),
+                    tokensPerSecond = result.tokensPerSecond,
                 )
-                onUpdate(ChatUpdate(result.content, result.thinking, if (result.fromCache) "缓存命中" else "模型完成", assistantId))
+                conversationStore.recordUsageModelRequest(
+                    assistantId,
+                    estimatedPromptInputTokens(conversationId, assistantId),
+                    estimatedAssistantOutputTokens(result.content, result.thinking, result.rawMessage.toString()),
+                )
+                onUpdate(ChatUpdate(result.content, result.thinking, if (result.fromCache) uiText("缓存命中") else uiText("模型完成"), assistantId, result.tokensPerSecond))
                 if (result.toolCalls.isEmpty()) {
                     conversationStore.setConversationMeta(conversationId, status = ConversationStore.STATUS_IDLE, profileId = profile.id, model = model)
                     return
                 }
                 result.toolCalls.forEach { call ->
-                    onUpdate(ChatUpdate(result.content, result.thinking, "调用工具: ${call.name}", assistantId))
-                    val toolResult = executeTool(conversationId, call)
+                    onUpdate(ChatUpdate(result.content, result.thinking, uiText("调用工具：") + call.name, assistantId))
+                    val toolResult = executeTool(conversationId, call) { toolStatus ->
+                        onUpdate(ChatUpdate(result.content, result.thinking, toolStatus, assistantId))
+                    }
                     conversationStore.addMessage(
                         conversationId,
                         "tool",
@@ -369,7 +561,7 @@ class OpenAiAgent(
                         model = model,
                         toolCallId = call.id,
                     )
-                    onUpdate(ChatUpdate(result.content, result.thinking, "工具完成: ${call.name}", assistantId))
+                    onUpdate(ChatUpdate(result.content, result.thinking, uiText("工具完成：") + call.name, assistantId))
                 }
             }
         } catch (error: CancellationException) {
@@ -378,7 +570,7 @@ class OpenAiAgent(
         } catch (error: Throwable) {
             conversationStore.setConversationMeta(conversationId, status = ConversationStore.STATUS_INTERRUPTED, profileId = profile.id, model = model)
             conversationStore.addMessage(conversationId, "assistant", "请求中断: ${error.message}", profileId = profile.id, model = model)
-            onUpdate(ChatUpdate("", "", "请求中断: ${error.message}"))
+            onUpdate(ChatUpdate("", "", uiText("请求中断：") + error.message))
             if (propagateErrors) throw error
         }
     }
@@ -407,12 +599,12 @@ class OpenAiAgent(
         require(profile.apiKey.isNotBlank()) { "请先配置 ${profile.name} 的 API Key" }
         val requestJson = JSONObject()
             .put("model", model)
-            .put("tools", toolDefinitions())
+            .put("tools", toolDefinitions(allowSubAgentsFor(conversationId)))
             .put("tool_choice", "auto")
             .put("messages", promptMessages(conversationId, excludeMessageId))
             .put("temperature", 0.2)
             .put("stream", true)
-        applyProviderCacheHints(requestJson, profile, model)
+        applyProviderCacheHints(requestJson, profile, model, conversationId)
         applyReasoningDepthHint(requestJson, profile, model)
 
         val allowLocalResponseCache = !isFreshSingleUserTurn(conversationId, excludeMessageId)
@@ -440,7 +632,9 @@ class OpenAiAgent(
 
         val content = StringBuilder()
         val thinking = StringBuilder()
+        val startedAtNanos = System.nanoTime()
         var promptTokens = 0L
+        var completionTokens = 0L
         var cachedPromptTokens = 0L
         val toolBuilders = linkedMapOf<Int, ToolCallBuilder>()
         client.newCall(request).execute().use { response ->
@@ -457,6 +651,7 @@ class OpenAiAgent(
                     val root = runCatching { JSONObject(data) }.getOrNull() ?: return@forEach
                     root.optJSONObject("usage")?.let { usage ->
                         promptTokens = usage.optLong("prompt_tokens", promptTokens)
+                        completionTokens = usage.optLong("completion_tokens", completionTokens)
                         cachedPromptTokens = usage.optJSONObject("prompt_tokens_details")
                             ?.optLong("cached_tokens", cachedPromptTokens)
                             ?: cachedPromptTokens
@@ -501,7 +696,7 @@ class OpenAiAgent(
                 ),
             )
         }
-        return StreamingResult(cleanContent, cleanThinking, message, calls)
+        return StreamingResult(cleanContent, cleanThinking, message, calls, outputTokensPerSecond(cleanContent, completionTokens, startedAtNanos))
     }
 
     private fun isFreshSingleUserTurn(conversationId: Long, excludeMessageId: Long): Boolean {
@@ -542,9 +737,9 @@ class OpenAiAgent(
             .put("model", model)
             .put("max_tokens", 4096)
             .put("temperature", 0.2)
-            .put("system", providerSystemText())
+            .put("system", providerSystemText(conversationId))
             .put("messages", anthropicMessages(conversationId, excludeMessageId))
-            .put("tools", anthropicTools())
+            .put("tools", anthropicTools(allowSubAgentsFor(conversationId)))
             .put("stream", true)
         val request = Request.Builder()
             .url(profile.chatEndpoint)
@@ -555,6 +750,8 @@ class OpenAiAgent(
             .build()
         val content = StringBuilder()
         val thinking = StringBuilder()
+        val startedAtNanos = System.nanoTime()
+        var outputTokens = 0L
         val blockBuilders = linkedMapOf<Int, AnthropicBlockBuilder>()
         val nonStreamingBody = StringBuilder()
         var sawStreamingData = false
@@ -574,6 +771,9 @@ class OpenAiAgent(
                     val data = line.removePrefix("data:").trim()
                     if (data.isBlank() || data == "[DONE]") return@forEach
                     val root = runCatching { JSONObject(data) }.getOrNull() ?: return@forEach
+                    root.optJSONObject("usage")?.let { usage ->
+                        outputTokens = usage.optLong("output_tokens", outputTokens)
+                    }
                     when (root.optString("type")) {
                         "content_block_start" -> {
                             val blockIndex = root.optInt("index")
@@ -616,6 +816,7 @@ class OpenAiAgent(
         }
         if (!sawStreamingData && nonStreamingBody.isNotBlank()) {
             val root = JSONObject(nonStreamingBody.toString())
+            outputTokens = root.optJSONObject("usage")?.optLong("output_tokens", outputTokens) ?: outputTokens
             val contentBlocks = root.optJSONArray("content") ?: JSONArray()
             for (index in 0 until contentBlocks.length()) {
                 val block = contentBlocks.optJSONObject(index) ?: continue
@@ -649,7 +850,7 @@ class OpenAiAgent(
         val cleanContent = cleanGeneratedText(content.toString())
         val cleanThinking = cleanGeneratedText(thinking.toString())
         val raw = assistantRawMessage(cleanContent, cleanThinking, calls)
-        return StreamingResult(cleanContent, cleanThinking, raw, calls)
+        return StreamingResult(cleanContent, cleanThinking, raw, calls, outputTokensPerSecond(cleanContent, outputTokens, startedAtNanos))
     }
 
     private suspend fun requestGeminiModel(
@@ -662,19 +863,21 @@ class OpenAiAgent(
         require(profile.apiKey.isNotBlank()) { "请先配置 ${profile.name} 的 API Key" }
         val requestJson = JSONObject()
             .put("contents", geminiContents(conversationId, excludeMessageId))
-            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", providerSystemText()))))
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", providerSystemText(conversationId)))))
             .put("generationConfig", JSONObject().put("temperature", 0.2))
-            .put("tools", JSONArray().put(JSONObject().put("functionDeclarations", geminiFunctionDeclarations())))
+            .put("tools", JSONArray().put(JSONObject().put("functionDeclarations", geminiFunctionDeclarations(allowSubAgentsFor(conversationId)))))
         val request = Request.Builder()
             .url(profile.geminiGenerateContentEndpoint(model))
             .addHeader("x-goog-api-key", profile.apiKey)
             .addHeader("Content-Type", "application/json")
             .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
             .build()
+        val startedAtNanos = System.nanoTime()
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) error("AI 请求失败 ${response.code}: ${body.take(600)}")
             val root = JSONObject(body)
+            val outputTokens = root.optJSONObject("usageMetadata")?.optLong("candidatesTokenCount", 0L) ?: 0L
             val parts = root.optJSONArray("candidates")
                 ?.optJSONObject(0)
                 ?.optJSONObject("content")
@@ -698,7 +901,7 @@ class OpenAiAgent(
             val cleanContent = cleanGeneratedText(content.toString())
             onDelta(cleanContent, "")
             val raw = assistantRawMessage(cleanContent, "", calls)
-            return StreamingResult(cleanContent, "", raw, calls)
+            return StreamingResult(cleanContent, "", raw, calls, outputTokensPerSecond(cleanContent, outputTokens, startedAtNanos))
         }
     }
 
@@ -715,7 +918,7 @@ class OpenAiAgent(
         val messages = JSONArray()
             .put(staticSystemMessage())
             .put(activeSystemPromptMessage())
-            .put(activeSkillsMessage())
+            .put(activeSkillsMessage(conversationId))
             .put(sessionContextMessage())
         val history = openAiHistoryGroups(conversationId, excludeMessageId)
         compactHistoryGroups(history).forEach { group ->
@@ -724,11 +927,11 @@ class OpenAiAgent(
         return sanitizePromptMessageSequence(messages)
     }
 
-    private fun providerSystemText(): String {
+    private fun providerSystemText(conversationId: Long): String {
         return listOf(
             staticSystemMessage(),
             activeSystemPromptMessage(),
-            activeSkillsMessage(),
+            activeSkillsMessage(conversationId),
             sessionContextMessage(),
         ).joinToString("\n\n") { it.optString("content") }
     }
@@ -778,10 +981,10 @@ class OpenAiAgent(
     }
 
     private fun anthropicUserContent(content: String): JSONArray {
-        if (!content.contains("用户上传媒体：")) {
+        if (!hasUploadedAttachments(content)) {
             return JSONArray().put(JSONObject().put("type", "text").put("text", content.ifBlank { " " }))
         }
-        val openAi = userPromptWithMedia(content)
+        val openAi = userPromptWithAttachments(content)
         val parts = openAi.optJSONArray("content") ?: JSONArray()
         return JSONArray().also { output ->
             for (index in 0 until parts.length()) {
@@ -862,8 +1065,8 @@ class OpenAiAgent(
     }
 
     private fun geminiUserParts(content: String): JSONArray {
-        if (!content.contains("用户上传媒体：")) return JSONArray().put(JSONObject().put("text", content.ifBlank { " " }))
-        val openAi = userPromptWithMedia(content)
+        if (!hasUploadedAttachments(content)) return JSONArray().put(JSONObject().put("text", content.ifBlank { " " }))
+        val openAi = userPromptWithAttachments(content)
         val parts = openAi.optJSONArray("content") ?: JSONArray()
         return JSONArray().also { output ->
             for (index in 0 until parts.length()) {
@@ -1080,10 +1283,10 @@ class OpenAiAgent(
             .put("content", lines.joinToString("\n"))
     }
 
-    private fun applyProviderCacheHints(requestJson: JSONObject, profile: ApiProfile, model: String) {
+    private fun applyProviderCacheHints(requestJson: JSONObject, profile: ApiProfile, model: String, conversationId: Long) {
         val host = runCatching { URI(profile.chatEndpoint).host.orEmpty().lowercase(Locale.US) }.getOrDefault("")
         if (!isOfficialOpenAiHost(host)) return
-        requestJson.put("prompt_cache_key", openAiPromptCacheKey(profile, model))
+        requestJson.put("prompt_cache_key", openAiPromptCacheKey(profile, model, conversationId))
         if (supportsOpenAiExtendedPromptCache(model)) {
             requestJson.put("prompt_cache_retention", "24h")
         }
@@ -1099,12 +1302,12 @@ class OpenAiAgent(
             normalized.startsWith("gpt-4.1")
     }
 
-    private fun openAiPromptCacheKey(profile: ApiProfile, model: String): String {
+    private fun openAiPromptCacheKey(profile: ApiProfile, model: String, conversationId: Long): String {
         val stable = listOf(
             "lyra_code_cache_v2",
             model.trim().lowercase(Locale.US),
             settings.roleplayPrompt().trim(),
-            settings.activeSkillsPrompt().trim(),
+            settings.activeSkillsPrompt(forcedSkillIdsFor(conversationId)).trim(),
             workspaceManager.termuxRootPath().orEmpty(),
             workspaceManager.displayName(),
             staticToolFingerprint(),
@@ -1114,7 +1317,7 @@ class OpenAiAgent(
     }
 
     private fun staticToolFingerprint(): String {
-        return sha256(toolDefinitions().toString()).take(PROMPT_CACHE_KEY_HASH_CHARS)
+        return sha256(toolDefinitions(false).toString()).take(PROMPT_CACHE_KEY_HASH_CHARS)
     }
 
     private fun AiCachedResponse.toStreamingResult(): StreamingResult {
@@ -1164,7 +1367,12 @@ class OpenAiAgent(
         }
     }
 
-    private suspend fun executeTool(conversationId: Long, call: ToolCall, skipApproval: Boolean = false): String {
+    private suspend fun executeTool(
+        conversationId: Long,
+        call: ToolCall,
+        skipApproval: Boolean = false,
+        onStatus: suspend (String) -> Unit = {},
+    ): String {
         val args = call.arguments
         val startedAt = System.currentTimeMillis()
         Log.d(
@@ -1394,6 +1602,7 @@ class OpenAiAgent(
                 "read_web_page" -> ToolExecution(webAgent.readPage(args.getString("url")))
                 "mark_web_sources" -> ToolExecution(webSourceMarkResult(args))
                 "manage_app_config" -> ToolExecution(manageAppConfig(args))
+                "run_sub_agents" -> ToolExecution(runSubAgents(conversationId, args, onStatus))
                 "set_todo_list" -> ToolExecution(todoSetHandler(conversationId, parseTodoItems(args)))
                 "update_todo_item" -> ToolExecution(
                     todoUpdateHandler(
@@ -1452,6 +1661,181 @@ class OpenAiAgent(
             SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US).parse(value)?.time ?: 0L
         }.getOrDefault(0L)
     }
+
+    private suspend fun runSubAgents(parentConversationId: Long, args: JSONObject, onStatus: suspend (String) -> Unit = {}): String {
+        if (!settings.subAgentOrchestrationEnabled) return "ERROR: SUB_AGENT_DISABLED\n用户未开启子代理编排。"
+        val candidates = settings.enabledSubAgents()
+        if (candidates.isEmpty()) return "ERROR: NO_SUB_AGENT_MODELS\n请先在设置 > 子代理编排中添加并启用子代理模型。"
+        val tasks = parseSubAgentTasks(args).take(MAX_SUB_AGENT_TASKS)
+        if (tasks.isEmpty()) return "ERROR: NO_SUB_AGENT_TASKS\ntasks 不能为空。"
+        val results = JSONArray()
+        val assignmentCounts = mutableMapOf<String, Int>()
+        tasks.forEachIndexed { index, task ->
+            currentCoroutineContext().ensureActive()
+            val agentConfig = chooseSubAgent(candidates, task, index, assignmentCounts)
+            assignmentCounts[agentConfig.id] = (assignmentCounts[agentConfig.id] ?: 0) + 1
+            onStatus(uiText("正在执行子代理任务") + " ${index + 1}/${tasks.size}: ${agentConfig.name}")
+            val profile = settings.profiles().firstOrNull { it.id == agentConfig.profileId }
+            if (profile == null) {
+                results.put(subAgentError(index, agentConfig, task, "模型服务不存在: ${agentConfig.profileId}"))
+                return@forEachIndexed
+            }
+            val model = agentConfig.model.ifBlank { profile.selectedModel }
+            val childConversationId = conversationStore.createConversation(
+                profileId = profile.id,
+                model = model,
+                title = "子代理 ${index + 1}: ${task.task.take(32)}",
+                mode = ConversationStore.MODE_SUBAGENT,
+            )
+            val prompt = buildSubAgentPrompt(parentConversationId, task, agentConfig)
+            conversationStore.addMessage(childConversationId, "user", prompt, profileId = profile.id, model = model)
+            runLoop(
+                childConversationId,
+                profile,
+                model,
+                onUpdate = { update ->
+                    if (update.status.isNotBlank()) {
+                        onStatus(uiText("正在执行子代理任务") + " ${index + 1}/${tasks.size}: ${agentConfig.name} · ${update.status}")
+                    }
+                },
+                propagateErrors = false,
+            )
+            val assistant = conversationStore.messages(childConversationId).lastOrNull { it.role == "assistant" }
+            results.put(
+                JSONObject()
+                    .put("index", index + 1)
+                    .put("agent", agentConfig.name)
+                    .put("profile_id", profile.id)
+                    .put("model", model)
+                    .put("task", task.task)
+                    .put("capability_hint", task.capabilityHint)
+                    .put("expected_output", task.expectedOutput)
+                    .put("result", assistant?.content.orEmpty())
+                    .put("status", conversationStore.conversation(childConversationId)?.status ?: "unknown"),
+            )
+        }
+        onStatus(uiText("子代理任务完成"))
+        return JSONObject()
+            .put("schema", "lyra_sub_agent_results_v1")
+            .put("parent_conversation_id", parentConversationId)
+            .put("results", results)
+            .toString()
+    }
+
+    private fun parseSubAgentTasks(args: JSONObject): List<SubAgentTask> {
+        val array = args.optJSONArray("tasks") ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.opt(index)
+                when (item) {
+                    is JSONObject -> {
+                        val task = item.optString("task").ifBlank { item.optString("description") }
+                        if (task.isNotBlank()) {
+                            add(
+                                SubAgentTask(
+                                    task = task,
+                                    capabilityHint = item.optString("capability_hint").ifBlank { item.optString("capability") },
+                                    expectedOutput = item.optString("expected_output"),
+                                    preferredAgent = item.optString("sub_agent_id")
+                                        .ifBlank { item.optString("agent_id") }
+                                        .ifBlank { item.optString("agent") }
+                                        .ifBlank { item.optString("model") },
+                                ),
+                            )
+                        }
+                    }
+                    is String -> if (item.isNotBlank()) add(SubAgentTask(item, "", "", ""))
+                }
+            }
+        }
+    }
+
+    private fun chooseSubAgent(
+        candidates: List<SubAgentConfig>,
+        task: SubAgentTask,
+        taskIndex: Int,
+        assignmentCounts: Map<String, Int>,
+    ): SubAgentConfig {
+        val preferred = task.preferredAgent.trim().lowercase(Locale.US)
+        if (preferred.isNotBlank()) {
+            candidates.firstOrNull { agent ->
+                listOf(agent.id, agent.name, agent.model, agent.profileId).any { it.lowercase(Locale.US) == preferred }
+            }?.let { return it }
+        }
+        val hint = listOf(task.capabilityHint, task.task).joinToString(" ")
+        val tokens = hint.lowercase(Locale.US).split(Regex("[^a-z0-9\\u4e00-\\u9fa5]+"))
+            .filter { it.length >= 2 }
+            .toSet()
+        fun usage(agent: SubAgentConfig): Int = assignmentCounts[agent.id] ?: 0
+        if (tokens.isNotEmpty()) {
+            val scored = candidates.map { agent ->
+                val text = "${agent.name} ${agent.model} ${agent.description}".lowercase(Locale.US)
+                agent to tokens.count { token -> token in text }
+            }
+            val bestScore = scored.maxOf { it.second }
+            if (bestScore > 0) {
+                return scored
+                    .filter { it.second == bestScore }
+                    .minWith(compareBy<Pair<SubAgentConfig, Int>> { usage(it.first) }.thenBy { candidates.indexOf(it.first) })
+                    .first
+            }
+        }
+        val leastUsed = candidates.minOf { usage(it) }
+        val leastUsedAgents = candidates.filter { usage(it) == leastUsed }
+        return leastUsedAgents[taskIndex % leastUsedAgents.size]
+    }
+
+    private fun buildSubAgentPrompt(parentConversationId: Long, task: SubAgentTask, agent: SubAgentConfig): String {
+        return """
+        LYRA_SUB_AGENT_TASK_V1
+        你是主对话临时委派的子代理。只完成下面的独立子任务，不要向用户寒暄，不要输出你的 thinking。
+        主会话 ID: $parentConversationId
+        子代理说明: ${agent.description.ifBlank { "无" }}
+        子任务: ${task.task}
+        能力提示: ${task.capabilityHint.ifBlank { "自动判断" }}
+        期望输出: ${task.expectedOutput.ifBlank { "给出可供主模型复核和整合的结论、证据、风险与必要文件/命令结果。" }}
+
+        工作规则：
+        - 可独立调用当前可用工具；需要用户确认的工具照常申请确认。
+        - 只返回最终可见结果，不要包含隐藏思考过程。
+        - 如果信息不足或工具被拒绝，明确说明缺口和已完成的检查。
+        - 不要尝试再次调用子代理编排。
+        """.trimIndent()
+    }
+
+    private fun subAgentError(index: Int, agent: SubAgentConfig, task: SubAgentTask, error: String): JSONObject {
+        return JSONObject()
+            .put("index", index + 1)
+            .put("agent", agent.name)
+            .put("task", task.task)
+            .put("error", error)
+    }
+
+    private fun allowSubAgentsFor(conversationId: Long): Boolean {
+        return settings.subAgentOrchestrationEnabled && conversationStore.conversation(conversationId)?.mode != ConversationStore.MODE_SUBAGENT
+    }
+
+    private fun subAgentPromptJson(): JSONArray {
+        val array = JSONArray()
+        settings.enabledSubAgents().forEach { agent ->
+            array.put(
+                JSONObject()
+                    .put("id", agent.id)
+                    .put("name", agent.name)
+                    .put("profile_id", agent.profileId)
+                    .put("model", agent.model)
+                    .put("description", agent.description),
+            )
+        }
+        return array
+    }
+
+    private data class SubAgentTask(
+        val task: String,
+        val capabilityHint: String,
+        val expectedOutput: String,
+        val preferredAgent: String,
+    )
 
     private fun parseTodoItems(args: JSONObject): List<TodoItem> {
         val array = args.optJSONArray("items")
@@ -2711,7 +3095,11 @@ class OpenAiAgent(
             )
             "download_file" -> {
                 val destination = args.optString("destination", "workspace")
-                val target = if (destination.equals("global", true)) "Android 共享存储" else "当前工作区"
+                val target = when {
+                    destination.equals("global", true) -> "Android 共享存储"
+                    !nativeFileManager.hasWorkspaceRoot() -> "Android 共享存储 Download/LyraCode（未选择工作区）"
+                    else -> "当前工作区"
+                }
                 ToolApprovalRequest(
                     conversationId,
                     call.name,
@@ -2975,8 +3363,8 @@ class OpenAiAgent(
     private fun ChatMessage.toPromptJson(): JSONObject {
         val raw = rawJson?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
             ?.also { sanitizeAssistantRaw(it) }
-        if (raw == null && role == "user" && content.contains("用户上传媒体：")) {
-            return userPromptWithMedia(content)
+        if (raw == null && role == "user" && hasUploadedAttachments(content)) {
+            return userPromptWithAttachments(content)
         }
         return raw ?: JSONObject()
             .put("role", role)
@@ -2988,15 +3376,21 @@ class OpenAiAgent(
             }
     }
 
-    private fun userPromptWithMedia(rawContent: String): JSONObject {
+    private fun hasUploadedAttachments(content: String): Boolean {
+        return content.contains("<lyra_attachment_v1>") ||
+            content.contains("用户上传媒体：") ||
+            content.contains("用户上传文件：")
+    }
+
+    private fun userPromptWithAttachments(rawContent: String): JSONObject {
         val parts = JSONArray()
-        val media = parseUploadedMedia(rawContent)
-        val textPart = stripUploadedMediaBlocks(rawContent).trim()
-        parts.put(JSONObject().put("type", "text").put("text", textPart.ifBlank { "请根据上传的媒体文件回答。" }))
-        media.forEach { item ->
-            val dataUrl = item.dataUrl.ifBlank { mediaDataUrl(item.uri, item.mimeType) }
+        val attachments = parseUploadedAttachments(rawContent)
+        val textPart = stripUploadedFileBlocks(stripUploadedMediaBlocks(stripUploadedAttachmentBlocks(rawContent))).trim()
+        parts.put(JSONObject().put("type", "text").put("text", textPart.ifBlank { "请根据用户上传的附件回答。" }))
+        attachments.forEach { item ->
             when (item.kind) {
                 "image" -> {
+                    val dataUrl = item.dataUrl.ifBlank { mediaDataUrl(item.uri, item.mimeType) }
                     if (dataUrl != null) {
                         parts.put(
                             JSONObject()
@@ -3008,6 +3402,7 @@ class OpenAiAgent(
                     }
                 }
                 "audio" -> {
+                    val dataUrl = item.dataUrl.ifBlank { mediaDataUrl(item.uri, item.mimeType) }
                     if (dataUrl != null) {
                         parts.put(
                             JSONObject()
@@ -3024,6 +3419,7 @@ class OpenAiAgent(
                     }
                 }
                 "video" -> {
+                    val dataUrl = item.dataUrl.ifBlank { mediaDataUrl(item.uri, item.mimeType) }
                     if (dataUrl != null) {
                         parts.put(
                             JSONObject()
@@ -3037,33 +3433,90 @@ class OpenAiAgent(
                             .put("text", "用户上传了视频媒体：${item.name}，MIME=${item.mimeType}。如果当前模型或平台不支持 video_url，请说明限制。"),
                     )
                 }
+                "text" -> {
+                    val body = buildString {
+                        append("用户上传文件：").append(item.name).append('\n')
+                        append("MIME：").append(item.mimeType).append('\n')
+                        append("大小：").append(item.size).append(" bytes\n\n")
+                        if (item.text.isNotBlank()) {
+                            append("```text\n")
+                            append(item.text)
+                            append("\n```")
+                        } else {
+                            append("文件内容为空或无法读取。")
+                        }
+                    }
+                    parts.put(JSONObject().put("type", "text").put("text", body))
+                }
                 else -> {
-                    parts.put(JSONObject().put("type", "text").put("text", "用户上传了${item.kind}媒体：${item.name}，MIME=${item.mimeType}，URI=${item.uri}。如果当前模型不支持该媒体类型，请说明限制并给出可行替代方案。"))
+                    parts.put(JSONObject().put("type", "text").put("text", "用户上传了附件：${item.name}，类型=${item.kind}，MIME=${item.mimeType}，URI=${item.uri}。如果当前模型不支持该附件类型，请说明限制并给出可行替代方案。"))
                 }
             }
         }
         return JSONObject().put("role", "user").put("content", parts)
     }
 
-    private data class UploadedMediaPrompt(
+    private data class UploadedAttachmentPrompt(
         val name: String,
         val kind: String,
         val mimeType: String,
         val dataUrl: String,
         val uri: String,
+        val size: Long,
+        val text: String,
     )
 
-    private fun parseUploadedMedia(content: String): List<UploadedMediaPrompt> {
-        val regex = Regex("用户上传媒体：([^\\n]+)\\n类型：([^\\n]+)\\nMIME：([^\\n]*)\\n(?:DATA_URL：([^\\n]*)\\n)?URI：([^\\n]*)", RegexOption.MULTILINE)
-        return regex.findAll(content).map {
-            UploadedMediaPrompt(
+    private fun parseUploadedAttachments(content: String): List<UploadedAttachmentPrompt> {
+        val attachments = mutableListOf<UploadedAttachmentPrompt>()
+        val markerRegex = Regex("<lyra_attachment_v1>([\\s\\S]*?)</lyra_attachment_v1>")
+        markerRegex.findAll(content).forEach { match ->
+            val payload = runCatching { JSONObject(match.groupValues[1]) }.getOrNull() ?: return@forEach
+            attachments += UploadedAttachmentPrompt(
+                name = payload.optString("name").ifBlank { "未命名文件" },
+                kind = payload.optString("kind").ifBlank { "text" },
+                mimeType = payload.optString("mime_type"),
+                dataUrl = payload.optString("data_url"),
+                uri = payload.optString("uri"),
+                size = payload.optLong("size", 0L),
+                text = payload.optString("text"),
+            )
+        }
+        val legacyMediaRegex = Regex("用户上传媒体：([^\\n]+)\\n类型：([^\\n]+)\\nMIME：([^\\n]*)\\n(?:DATA_URL：([^\\n]*)\\n)?URI：([^\\n]*)", RegexOption.MULTILINE)
+        legacyMediaRegex.findAll(content).forEach {
+            attachments += UploadedAttachmentPrompt(
                 name = it.groupValues[1].trim(),
                 kind = it.groupValues[2].trim(),
                 mimeType = it.groupValues[3].trim(),
                 dataUrl = it.groupValues[4].trim(),
                 uri = it.groupValues[5].trim(),
+                size = 0L,
+                text = "",
             )
-        }.toList()
+        }
+        val legacyFileRegex = Regex("用户上传文件：([^\\n]+)\\n大小：(\\d+) bytes\\n\\n```text\\n([\\s\\S]*?)\\n```", RegexOption.MULTILINE)
+        legacyFileRegex.findAll(content).forEach {
+            attachments += UploadedAttachmentPrompt(
+                name = it.groupValues[1].trim().ifBlank { "未命名文件" },
+                kind = "text",
+                mimeType = "text/plain",
+                dataUrl = "",
+                uri = "",
+                size = it.groupValues[2].toLongOrNull() ?: 0L,
+                text = it.groupValues[3],
+            )
+        }
+        return attachments
+    }
+
+    private fun stripUploadedAttachmentBlocks(content: String): String {
+        return content.replace(Regex("\\n*<lyra_attachment_v1>[\\s\\S]*?</lyra_attachment_v1>\\n*"), "\n").trim()
+    }
+
+    private fun stripUploadedFileBlocks(content: String): String {
+        return content
+            .replace(Regex("\\n*用户上传文件：[^\\n]+\\n大小：\\d+ bytes\\n\\n```text\\n[\\s\\S]*?\\n```\\n?"), "\n")
+            .replace(Regex("\\n*用户上传文件：[^\\n]+\\n大小：\\d+ bytes\\n?"), "\n")
+            .trim()
     }
 
     private fun stripUploadedMediaBlocks(content: String): String {
@@ -3072,7 +3525,6 @@ class OpenAiAgent(
             "\n",
         ).trim()
     }
-
     private fun mediaDataUrl(uriText: String, mimeType: String): String? = runCatching {
         val uri = Uri.parse(uriText)
         val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
@@ -3138,6 +3590,8 @@ class OpenAiAgent(
             .put("global_file_rule", "需要访问非工作区共享存储文件时使用 global_* 文件工具；Download/Downloads 表示 /storage/emulated/0/Download。写入、删除、移动会请求用户确认。")
             .put("termux_rule", "run_command 默认在工作目录运行；不要传 Termux 私有目录；不要运行不会退出的长期驻留命令。")
             .put("tool_output_rule", "工具输出为 lyra_tool_output_v2 JSON；动态结果位于对话末尾。")
+            .put("sub_agent_orchestration_enabled", settings.subAgentOrchestrationEnabled)
+            .put("sub_agents", subAgentPromptJson())
         return JSONObject()
             .put("role", "system")
             .put(
@@ -3153,11 +3607,67 @@ class OpenAiAgent(
             "LYRA_USER_SELECTED_SYSTEM_PROMPT_V1\n${settings.roleplayPrompt()}",
         )
 
-    private fun activeSkillsMessage(): JSONObject = JSONObject()
+    private fun forcedSkillIdsFor(conversationId: Long): List<String> = forcedSkillsByConversation[conversationId].orEmpty()
+
+    private fun estimatedPromptInputTokens(conversationId: Long, excludeMessageId: Long): Long {
+        val contextTokens = conversationStore.messages(conversationId)
+            .filter { it.id != excludeMessageId }
+            .sumOf { it.promptInputCost() }
+        return REQUEST_STATIC_INPUT_TOKENS + contextTokens
+    }
+
+    private fun ChatMessage.promptInputCost(): Long {
+        return when (role.lowercase()) {
+            "user" -> MESSAGE_WRAPPER_TOKENS + tokenizer.count(content)
+            "tool" -> MESSAGE_WRAPPER_TOKENS + tokenizer.count(content)
+            "assistant" -> MESSAGE_WRAPPER_TOKENS + estimatedAssistantOutputTokens(content, thinking, rawJson)
+            else -> MESSAGE_WRAPPER_TOKENS + tokenizer.count(content) + tokenizer.count(thinking)
+        }
+    }
+
+    private fun estimatedAssistantOutputTokens(content: String, thinking: String, rawJson: String?): Long {
+        return tokenizer.count(content) +
+            tokenizer.count(thinking) +
+            tokenizer.count(toolCallsOutputText(rawJson))
+    }
+
+    private fun toolCallsOutputText(rawJson: String?): String {
+        val raw = rawJson?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return ""
+        val calls = raw.optJSONArray("tool_calls") ?: return ""
+        return buildString {
+            for (index in 0 until calls.length()) {
+                val call = calls.optJSONObject(index) ?: continue
+                appendToolCallOutput(call)
+                append('\n')
+            }
+        }
+    }
+
+    private fun StringBuilder.appendToolCallOutput(call: JSONObject) {
+        val function = call.optJSONObject("function")
+        if (function != null) {
+            append(function.optString("name"))
+            append('\n')
+            append(function.optString("arguments"))
+            return
+        }
+        append(call.optString("name"))
+        append('\n')
+        val input = call.opt("input")
+        when (input) {
+            is JSONObject, is JSONArray -> append(input.toString())
+            null -> append(call.toString())
+            else -> append(input.toString())
+        }
+    }
+
+    private fun activeSkillsMessage(conversationId: Long): JSONObject = JSONObject()
         .put("role", "system")
         .put(
             "content",
-            "LYRA_ACTIVE_SKILLS_V1\n${settings.activeSkillsPrompt().ifBlank { "[]" }}",
+            "LYRA_ACTIVE_SKILLS_V1\n${settings.activeSkillsPrompt(forcedSkillIdsFor(conversationId)).ifBlank { "[]" }}",
         )
 
     private fun staticSystemMessage(): JSONObject = JSONObject()
@@ -3168,10 +3678,10 @@ class OpenAiAgent(
             LYRA_STATIC_AGENT_PROTOCOL_V3
             以下是 Lyra Code 运行环境与工具约束，必须遵守。此段为静态协议，不包含会随会话变化的路径、时间、模型、网络结果、工具结果或文件内容；运行时上下文会以固定 JSON 模板放在消息列表最后。
             你是运行在 Android 应用 Lyra Code 中的开发 Agent。优先使用原生文件工具完成小文件读写和目录浏览。
-            Skills 是可选能力包，不是默认系统提示词。先根据 LYRA_ACTIVE_SKILLS_V1 中的 name/description 判断是否相关；相关时再调用 list_skill_files 和 read_skill_file 读取 SKILL.md 或必要文件。不要无差别读取所有 Skills。
+            Skills 是可选能力包，不是默认系统提示词，除非 LYRA_ACTIVE_SKILLS_V1 包含 forced_skill_ids。若存在 forced_skill_ids，必须调用 list_skill_files 和 read_skill_file 从 SKILL.md 开始检查并尽量应用这些 Skills；若无法应用，应简要说明原因。没有 forced_skill_ids 时，先根据 name/description 判断是否相关；相关时再读取 SKILL.md 或必要文件。不要无差别读取所有 Skills。
             Skills 可能包含桌面、云端或外部服务假设，使用前必须适配 Android、Termux 和 Lyra Code 工具限制。
             MCP 工具来自用户配置的远程或局域网 MCP Server，仅在工具名以 mcp_ 开头时代表外部 MCP 工具。调用 MCP 工具前应用会请求用户确认；不要把 MCP 工具当成本地文件工具使用，也不要假设 MCP Server 可访问 Android 本机工作区。
-            下载 http/https 文件时优先调用 download_file，直接保存到工作区或 Android 共享存储；可提供请求头和 SHA-256 校验。只有 download_file 明确失败、被禁用或不支持目标协议时，才可把 Termux 的 curl/wget 作为最后备用手段。
+            下载 http/https 文件时优先调用 download_file，直接保存到工作区或 Android 共享存储；未选择工作区而 destination=workspace 时，应用会自动回退保存到 Android 共享存储 Download/LyraCode。可提供请求头和 SHA-256 校验。只有 download_file 明确失败、被禁用或不支持目标协议时，才可把 Termux 的 curl/wget 作为最后备用手段。
             需要预览或调试工作区内静态网站、Vue/Vite/VitePress 构建产物、HTML/CSS/JS 文件时，优先使用 get_mini_server_status 和 manage_mini_server 启动 Lyra Code 微型服务器。默认监听 127.0.0.1；若用户要求局域网、内网穿透或公网访问，可设置 host=0.0.0.0 并提醒设置密码和 HTTP 明文风险。HTTPS 可使用自定义证书库/PEM 证书链和私钥；未配置时使用内置自签名证书，浏览器可能提示不受信任。custom_domains 只是访问域名展示/跳转配置，域名 DNS 或内网穿透仍需用户自行指向设备。站点资源加载失败、404、认证失败或页面 JavaScript 报错时，调用 read_mini_server_logs 读取最近日志再修复。
             只有在工具列表提供 run_command，且需要安装包、运行脚本、Git、长输出或非空目录删除时才调用 run_command；如果工具列表没有 run_command，说明用户未授予 Termux 通信权限或已禁用该工具，不要假设可执行命令。
             需要按文件名、扩展名或路径片段查找文件时，必须先调用 search_files；不要用 run_command 执行 find、fd、locate 或自行写搜索脚本来代替 search_files。
@@ -3197,6 +3707,7 @@ class OpenAiAgent(
             如果工具、MCP 或代码执行生成图片、音频、视频等媒体结果，优先用 Markdown 媒体语法输出，方便 Lyra Code 直接预览：图片使用 ![说明](data:image/png;base64,...) 或 ![说明](https://.../file.png)；视频/音频可输出 ![说明](https://.../file.mp4) 或 ![说明](file:///.../file.mp3)。如果只有原始 base64，尽量补成 data:<mime>;base64,<内容>；如果只有本地路径或远程 URL，直接输出完整路径/URL，不要只写“已生成”。
             媒体文件较大时不要把完整 base64 重复粘贴多次；优先输出可访问 URL 或本地文件路径。只有用户明确需要内联文件，或工具只返回 base64 时，才输出 data URL。
             SSH 工具用于用户已配置的远程服务器。调用 ssh_exec 前必须先调用 list_ssh_servers 获取 server_id；任何 ssh_exec 都会请求用户确认。安装软件、编译服务、修改系统配置前必须先检查目标服务器系统、CPU/GPU、内存、磁盘和权限，避免安装不兼容或超出服务器承载能力的软件。禁止直接读取 /var/log 或 *.log；先查看文件属性和行数，确认范围安全后只读取小片段。不要尝试 vim、top、交互式 ssh 等复杂交互 shell。
+            如果用户在对话动作菜单开启了子代理编排，工具列表会提供 run_sub_agents。面对复杂困难任务、需要独立调查/审查/验证/多方案比较时，应先拆分为若干边界清晰的子任务并调用 run_sub_agents；每项任务可用 sub_agent_id/agent/model 指定目标子代理。若多个启用子代理都适合，应把任务分配给不同模型以发挥各自优势；根据子代理返回结果自行复核，结果不足时可重新分配或亲自验证。简单问答、单步编辑或用户明确要求不要分工时不要调用。
             在进行多步骤任务，尤其是修改文件或执行命令前，必须先调用 set_todo_list 制定 TODO 列表；每完成一个步骤，必须调用 update_todo_item 标记 running/completed/blocked，让用户能看到进度。
             用户上传的文本文件会以普通 user 消息提供；图片、音频、视频等媒体会由 Lyra Code 本地转成 data:<mime>;base64,...，并按 OpenAI 兼容多模态 JSON content parts 放入请求体。
             写入文件前先读取相关上下文；危险命令会被应用拒绝。需要切换平台或模型时按当前会话选择的配置执行。
@@ -3215,7 +3726,7 @@ class OpenAiAgent(
             """.trimIndent(),
         )
 
-    private fun toolDefinitions(): JSONArray {
+    private fun toolDefinitions(allowSubAgents: Boolean = false): JSONArray {
         val definitions = JSONArray()
         .put(function("list_directory", "列出工作目录下的文件和子目录。path 必须是相对路径；根目录用 . 或空字符串。", "path" to "string"))
         .put(function("read_file", "读取工作目录内 1MB 以下文本文件。path 必须是相对路径，不要传 Termux 私有目录。", "path" to "string"))
@@ -3262,7 +3773,7 @@ class OpenAiAgent(
         .put(
             functionWithOptional(
                 "download_file",
-                "使用应用原生 HTTP/HTTPS 客户端下载文件，不依赖 Termux。必须优先于 curl/wget 使用。destination=workspace 时 path 为工作区相对路径；destination=global 时 path 为 Android 共享存储路径，例如 Download/file.zip。执行前会请求用户确认。headers 每项使用 Name: Value 格式；sha256 可用于完整性校验。",
+                "使用应用原生 HTTP/HTTPS 客户端下载文件，不依赖 Termux。必须优先于 curl/wget 使用。destination=workspace 时 path 为工作区相对路径；若未选择工作区，应用会自动保存到 Android 共享存储 Download/LyraCode/<path>。destination=global 时 path 为 Android 共享存储路径，例如 Download/file.zip。执行前会请求用户确认。headers 每项使用 Name: Value 格式；sha256 可用于完整性校验。",
                 required = listOf("url" to "string", "path" to "string"),
                 optional = listOf(
                     "destination" to "string",
@@ -3511,6 +4022,16 @@ class OpenAiAgent(
                 optional = listOf("server_id" to "string", "remote_path" to "string", "local_path" to "string", "global_path" to "string"),
             ),
         )
+        if (allowSubAgents && settings.subAgentOrchestrationEnabled && settings.enabledSubAgents().isNotEmpty()) {
+            definitions.put(
+                function(
+                    "run_sub_agents",
+                    "子代理编排工具。仅在用户任务复杂、需要并行研究、独立代码审查、多方案验证或跨领域分工时调用。tasks 为数组，每项包含 task、capability_hint、expected_output，可选 sub_agent_id/agent/model 指定目标子代理；未指定时系统会按能力匹配并在无明显匹配时均衡分配到不同启用模型。子代理会独立调用可用工具并请求必要审批；完成后只返回最终结果，不返回 thinking。",
+                    "tasks" to "array",
+                ),
+            )
+        }
+        definitions
         .put(function("set_todo_list", "设置当前任务 TODO 列表。修改文件或执行命令前必须先调用。items 为数组，每项包含 id、text、status、note。", "items" to "array"))
         .put(function("update_todo_item", "更新 TODO 项状态。status 可用 pending、running、completed、blocked。", "id" to "string", "status" to "string", "note" to "string"))
         settings.enabledMcpTools().forEach { (server, tool) ->
@@ -3530,8 +4051,8 @@ class OpenAiAgent(
         }
     }
 
-    private fun anthropicTools(): JSONArray {
-        val tools = toolDefinitions()
+    private fun anthropicTools(allowSubAgents: Boolean = false): JSONArray {
+        val tools = toolDefinitions(allowSubAgents)
         return JSONArray().also { output ->
             for (index in 0 until tools.length()) {
                 val function = tools.optJSONObject(index)?.optJSONObject("function") ?: continue
@@ -3545,8 +4066,8 @@ class OpenAiAgent(
         }
     }
 
-    private fun geminiFunctionDeclarations(): JSONArray {
-        val tools = toolDefinitions()
+    private fun geminiFunctionDeclarations(allowSubAgents: Boolean = false): JSONArray {
+        val tools = toolDefinitions(allowSubAgents)
         return JSONArray().also { output ->
             for (index in 0 until tools.length()) {
                 val function = tools.optJSONObject(index)?.optJSONObject("function") ?: continue
@@ -3806,18 +4327,35 @@ class OpenAiAgent(
         val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
     }
+    private fun outputTokensPerSecond(content: String, reportedOutputTokens: Long, startedAtNanos: Long): Double {
+        val tokens = reportedOutputTokens.takeIf { it > 0L } ?: tokenizer.count(content)
+        val elapsedSeconds = elapsedMs(startedAtNanos) / 1000.0
+        if (tokens <= 0L || elapsedSeconds <= 0.0) return 0.0
+        return tokens / elapsedSeconds
+    }
+
+    private fun elapsedMs(startedAtNanos: Long): Long {
+        return ((System.nanoTime() - startedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+    }
+
+    private fun String.cleanProbeMessage(): String {
+        return replace(Regex("\\s+"), " ").trim().take(300).ifBlank { uiText("请求失败") }
+    }
 
     companion object {
         private const val AGENT_TAG = "LyraAgent"
         private const val ANTHROPIC_VERSION = "2023-06-01"
         private const val LOG_ARGUMENT_CHARS = 1_000
         private const val MAX_TOOL_RESULT_CHARS = 500_000
+        private const val MAX_SUB_AGENT_TASKS = 6
         private const val PROMPT_RECENT_GROUPS = 36
         private const val PROMPT_SUMMARY_CHUNK_GROUPS = 12
         private const val SUMMARY_LINE_CHARS = 240
         private const val SUMMARY_MAX_LINES = 96
         private const val SUMMARY_HEAD_LINES = 24
         private const val PROMPT_CACHE_KEY_HASH_CHARS = 32
+        private const val REQUEST_STATIC_INPUT_TOKENS = 1024L
+        private const val MESSAGE_WRAPPER_TOKENS = 8L
         private const val GLOBAL_SEARCH_RESULT_LIMIT = 120
         private const val MAX_IMAGE_PROMPT_BYTES = 8 * 1024 * 1024
         private const val DEFAULT_WEBDAV_BACKUP_PATH = "/LyraCode/lyra_backup_latest.zip"
@@ -4015,11 +4553,15 @@ private fun cleanGeneratedText(text: String): String {
 }
 
 fun ChatMessage.toRecord(): ChatRecord = ChatRecord(
-    id,
-    role,
-    if (role == "assistant") cleanGeneratedText(content) else content,
-    if (role == "assistant") cleanGeneratedText(thinking) else thinking,
-    profileId,
-    model,
-    createdAt,
+    id = id,
+    role = role,
+    content = if (role == "assistant") cleanGeneratedText(content) else content,
+    thinking = if (role == "assistant") cleanGeneratedText(thinking) else thinking,
+    profileId = profileId,
+    model = model,
+    createdAt = createdAt,
+    tokensPerSecond = tokensPerSecond,
+    toolCallId = toolCallId,
+    rawJson = rawJson,
 )
+

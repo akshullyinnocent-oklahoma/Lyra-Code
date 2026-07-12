@@ -44,6 +44,7 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -52,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -104,6 +106,7 @@ import org.intellij.markdown.parser.MarkdownParser
 import ru.noties.jlatexmath.JLatexMathDrawable
 import java.io.File
 import kotlin.math.max
+import kotlin.math.pow
 
 private val richMarkdownFlavour by lazy {
     GFMFlavourDescriptor(makeHttpsAutoLinks = true, useSafeLinks = true)
@@ -115,8 +118,27 @@ private val richMarkdownParser by lazy {
 
 private val inlineLatexRegex = Regex("\\\\\\((.+?)\\\\\\)")
 private val blockLatexRegex = Regex("\\\\\\[(.+?)\\\\\\]", RegexOption.DOT_MATCHES_ALL)
+private val displayLatexRegex = Regex("""\$\$([\s\S]+?)\$\$""")
 private val codeBlockRegex = Regex("```[\\s\\S]*?```|`[^`\n]*`", RegexOption.DOT_MATCHES_ALL)
-private val latexBlockLineBreakRegex = Regex("""[ \t]*\r?\n[ \t]*""")
+private const val latexDrawablePaddingPx = 2
+
+internal data class StreamingTextFade(
+    val contentLength: Int,
+    val opaquePosition: Float,
+    val maximumTailCharacters: Int = 120,
+) {
+    private val fadeStart: Float
+        get() = max(opaquePosition, (contentLength - maximumTailCharacters).toFloat()).coerceAtLeast(0f)
+
+    fun alphaAt(sourceIndex: Int): Float {
+        if (sourceIndex + 1 <= fadeStart || contentLength <= 0) return 1f
+        val tailLength = (contentLength - fadeStart).coerceAtLeast(1f)
+        val progress = ((sourceIndex + 1f - fadeStart) / tailLength).coerceIn(0f, 1f)
+        return (0.08f + 0.92f * (1f - progress).pow(1.35f)).coerceIn(0.08f, 1f)
+    }
+}
+
+private val LocalStreamingTextFade = staticCompositionLocalOf<StreamingTextFade?> { null }
 
 private data class RichMarkdownParseResult(
     val content: String,
@@ -129,6 +151,7 @@ internal fun RichMarkdownContent(
     markdown: String,
     modifier: Modifier = Modifier,
     style: TextStyle = LocalTextStyle.current,
+    streamingFade: StreamingTextFade? = null,
 ) {
     var data by remember(markdown) { mutableStateOf(parseRichMarkdown(markdown)) }
     val currentMarkdown by rememberUpdatedState(markdown)
@@ -141,10 +164,12 @@ internal fun RichMarkdownContent(
             .collect { data = it }
     }
 
-    ProvideTextStyle(style) {
-        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            data.root.children.fastForEach { child ->
-                RichMarkdownNode(child, data.content)
+    CompositionLocalProvider(LocalStreamingTextFade provides streamingFade) {
+        ProvideTextStyle(style) {
+            Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                data.root.children.fastForEach { child ->
+                    RichMarkdownNode(child, data.content)
+                }
             }
         }
     }
@@ -160,20 +185,31 @@ private fun parseRichMarkdown(content: String, fallback: Boolean = false): RichM
 
 private fun preProcessMarkdownLatex(content: String): String {
     val codeRanges = codeBlockRegex.findAll(content).map { it.range }.toList()
-    fun inCodeBlock(index: Int): Boolean = codeRanges.any { index in it }
-    var result = inlineLatexRegex.replace(content) { match ->
-        if (inCodeBlock(match.range.first)) {
-            match.value
-        } else {
-            "$" + match.groupValues[1] + "$"
+    if (codeRanges.isEmpty()) return preProcessMarkdownLatexChunk(content)
+    val result = StringBuilder(content.length)
+    var cursor = 0
+    codeRanges.forEach { range ->
+        if (range.first > cursor) {
+            result.append(preProcessMarkdownLatexChunk(content.substring(cursor, range.first)))
         }
+        result.append(content.substring(range.first, range.last + 1))
+        cursor = range.last + 1
+    }
+    if (cursor < content.length) {
+        result.append(preProcessMarkdownLatexChunk(content.substring(cursor)))
+    }
+    return result.toString()
+}
+
+private fun preProcessMarkdownLatexChunk(content: String): String {
+    var result = displayLatexRegex.replace(content) { match ->
+        "\n$$\n" + match.groupValues[1].trim() + "\n$$\n"
+    }
+    result = inlineLatexRegex.replace(result) { match ->
+        "$" + match.groupValues[1] + "$"
     }
     result = blockLatexRegex.replace(result) { match ->
-        if (inCodeBlock(match.range.first)) {
-            match.value
-        } else {
-            "$$" + match.groupValues[1].trim().replace(latexBlockLineBreakRegex, " ") + "$$"
-        }
+        "\n$$\n" + match.groupValues[1].trim() + "\n$$\n"
     }
     return result
 }
@@ -311,7 +347,8 @@ private fun RichListItem(node: ASTNode, content: String, marker: String, level: 
     }
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(verticalAlignment = Alignment.Top) {
-            Text(marker, color = MaterialTheme.colorScheme.primary, modifier = Modifier.width(28.dp))
+            val markerAlpha = LocalStreamingTextFade.current?.alphaAt(node.startOffset) ?: 1f
+            Text(marker, color = MaterialTheme.colorScheme.primary.copy(alpha = markerAlpha), modifier = Modifier.width(28.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 direct.fastForEach { RichMarkdownNode(it, content, level) }
             }
@@ -360,7 +397,7 @@ private fun RichCodeBlock(code: String, language: String = "text") {
                 onClick = { clipboard.setText(AnnotatedString(code)) },
                 modifier = Modifier.size(34.dp),
             ) {
-                Icon(Icons.Default.ContentCopy, contentDescription = "复制代码", modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.ContentCopy, contentDescription = uiText("复制代码"), modifier = Modifier.size(18.dp))
             }
         }
         Text(
@@ -397,13 +434,13 @@ private fun RichTable(node: ASTNode, content: String) {
                 val result = saveCsvToDownloads(context, name, csv)
                 Toast.makeText(
                     context,
-                    result.fold({ "已导出到 Download/$name" }, { "导出失败: ${it.message.orEmpty()}" }),
+                    result.fold({ uiText("已导出到 Download/") + name }, { uiText("导出失败: ") + it.message.orEmpty() }),
                     Toast.LENGTH_SHORT,
                 ).show()
             },
             modifier = Modifier.size(36.dp),
         ) {
-            Icon(Icons.Default.FileDownload, contentDescription = "导出 CSV", modifier = Modifier.size(19.dp))
+            Icon(Icons.Default.FileDownload, contentDescription = uiText("导出 CSV"), modifier = Modifier.size(19.dp))
         }
     }
     RichDataTable(
@@ -540,18 +577,51 @@ private fun RichImage(node: ASTNode, content: String) {
     val alt = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_TEXT)?.getTextInNode(content)?.trim('[', ']').orEmpty()
     val url = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getTextInNode(content).orEmpty()
     if (url.isNotBlank()) {
-        MarkdownMediaPreview(alt.ifBlank { "媒体文件" }, url)
+        MarkdownMediaPreview(alt.ifBlank { uiText("媒体文件") }, url)
     }
 }
 
 @Composable
 private fun RichInlineText(nodes: List<ASTNode>, content: String) {
+    if (nodesContainDisplayInlineMath(nodes, content)) {
+        RichInlineTextWithDisplayMath(nodes, content)
+        return
+    }
+    RichInlineTextLine(nodes, content)
+}
+
+@Composable
+private fun RichInlineTextWithDisplayMath(nodes: List<ASTNode>, content: String) {
+    val lineBuffer = mutableListOf<ASTNode>()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        @Composable
+        fun flushLine() {
+            if (lineBuffer.isNotEmpty()) {
+                RichInlineTextLine(lineBuffer.toList(), content)
+                lineBuffer.clear()
+            }
+        }
+        nodes.fastForEach { node ->
+            if (node.type == GFMElementTypes.INLINE_MATH && shouldDisplayInlineMath(node.getTextInNode(content))) {
+                flushLine()
+                RichMathBlock(node.getTextInNode(content))
+            } else {
+                lineBuffer += node
+            }
+        }
+        flushLine()
+    }
+}
+
+@Composable
+private fun RichInlineTextLine(nodes: List<ASTNode>, content: String) {
     val colorScheme = MaterialTheme.colorScheme
     val textStyle = LocalTextStyle.current
     val density = LocalDensity.current
+    val streamingFade = LocalStreamingTextFade.current
     val inlineContents = remember { mutableStateMapOf<String, InlineTextContent>() }
     val key = remember(nodes, content) { nodes.joinToString("|") { "${it.startOffset}:${it.endOffset}:${it.type}" } }
-    val annotated = remember(key, colorScheme, textStyle, density) {
+    val annotated = remember(key, colorScheme, textStyle, density, streamingFade) {
         inlineContents.clear()
         buildAnnotatedString {
             nodes.fastForEach {
@@ -562,6 +632,7 @@ private fun RichInlineText(nodes: List<ASTNode>, content: String) {
                     colorScheme,
                     density,
                     textStyle,
+                    streamingFade,
                 )
             }
         }
@@ -583,21 +654,22 @@ private fun AnnotatedString.Builder.appendInlineMarkdownNode(
     colorScheme: androidx.compose.material3.ColorScheme,
     density: Density,
     style: TextStyle,
+    streamingFade: StreamingTextFade?,
 ) {
     when (node.type) {
         MarkdownElementTypes.EMPH -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
             node.children.trimMarkdownMarkers(MarkdownTokenTypes.EMPH, 1).fastForEach {
-                appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style)
+                appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style, streamingFade)
             }
         }
         MarkdownElementTypes.STRONG -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
             node.children.trimMarkdownMarkers(MarkdownTokenTypes.EMPH, 2).fastForEach {
-                appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style)
+                appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style, streamingFade)
             }
         }
         GFMElementTypes.STRIKETHROUGH -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
             node.children.trimMarkdownMarkers(GFMTokenTypes.TILDE, 2).fastForEach {
-                appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style)
+                appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style, streamingFade)
             }
         }
         MarkdownElementTypes.CODE_SPAN -> withStyle(
@@ -612,15 +684,15 @@ private fun AnnotatedString.Builder.appendInlineMarkdownNode(
             append(node.getTextInNode(content).trim('`'))
             append(" ")
         }
-        MarkdownElementTypes.INLINE_LINK -> appendInlineLink(node, content, colorScheme)
-        MarkdownElementTypes.AUTOLINK -> appendInlineLink(node, content, colorScheme)
+        MarkdownElementTypes.INLINE_LINK -> appendInlineLink(node, content, colorScheme, streamingFade)
+        MarkdownElementTypes.AUTOLINK -> appendInlineLink(node, content, colorScheme, streamingFade)
         GFMElementTypes.INLINE_MATH -> {
             val formula = node.getTextInNode(content)
             val id = "math-${node.startOffset}-${node.endOffset}"
             val fontSize = resolvedFontSize(style)
             val size = with(density) {
                 assumeLatexSize(formula, fontSize.toPx()).let {
-                    (it.width() + 12).toSp() to (it.height() + 8).toSp()
+                    (it.width() + 14).toSp() to (it.height() + 12).toSp()
                 }
             }
             inlineContents[id] = InlineTextContent(
@@ -643,27 +715,45 @@ private fun AnnotatedString.Builder.appendInlineMarkdownNode(
         MarkdownTokenTypes.EOL -> append("\n")
         else -> {
             if (node is LeafASTNode) {
-                append(node.getTextInNode(content))
+                appendStreamingFadedText(node.getTextInNode(content), node.startOffset, streamingFade, colorScheme.onSurface)
             } else {
                 node.children.fastForEach {
-                    appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style)
+                    appendInlineMarkdownNode(it, content, inlineContents, colorScheme, density, style, streamingFade)
                 }
             }
         }
     }
 }
 
+private fun AnnotatedString.Builder.appendStreamingFadedText(
+    value: String,
+    sourceStart: Int,
+    streamingFade: StreamingTextFade?,
+    baseColor: Color,
+) {
+    if (streamingFade == null || value.isEmpty()) {
+        append(value)
+        return
+    }
+    value.forEachIndexed { index, char ->
+        withStyle(SpanStyle(color = baseColor.copy(alpha = streamingFade.alphaAt(sourceStart + index)))) {
+            append(char)
+        }
+    }
+}
 private fun AnnotatedString.Builder.appendInlineLink(
     node: ASTNode,
     content: String,
     colorScheme: androidx.compose.material3.ColorScheme,
+    streamingFade: StreamingTextFade?,
 ) {
     val destination = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_DESTINATION)?.getTextInNode(content)
         ?: node.getTextInNode(content).trim('<', '>')
     val label = node.findChildOfTypeRecursive(MarkdownElementTypes.LINK_TEXT)?.getTextInNode(content)?.trim('[', ']')
         ?: destination
     withLink(LinkAnnotation.Url(destination)) {
-        withStyle(SpanStyle(color = colorScheme.primary, textDecoration = TextDecoration.Underline)) {
+        val alpha = streamingFade?.alphaAt(node.endOffset - 1) ?: 1f
+        withStyle(SpanStyle(color = colorScheme.primary.copy(alpha = alpha), textDecoration = TextDecoration.Underline)) {
             append(label)
         }
     }
@@ -674,7 +764,7 @@ private fun RichMathBlock(formula: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp)
+            .padding(vertical = 10.dp)
             .horizontalScroll(rememberScrollState()),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -682,7 +772,7 @@ private fun RichMathBlock(formula: String) {
             latex = formula,
             color = LocalContentColor.current,
             fontSize = MaterialTheme.typography.bodyLarge.fontSize,
-            modifier = Modifier.padding(vertical = 6.dp),
+            modifier = Modifier.padding(vertical = 8.dp),
         )
     }
 }
@@ -707,7 +797,7 @@ private fun RichLatexText(
                     .textSize(resolvedStyle.fontSize.toPx())
                     .color(resolvedStyle.color.toArgb())
                     .background(Color.Transparent.toArgb())
-                    .padding(0)
+                    .padding(latexDrawablePaddingPx)
                     .align(JLatexMathDrawable.ALIGN_LEFT)
                     .build()
             }
@@ -733,7 +823,7 @@ private fun assumeLatexSize(latex: String, fontSizePx: Float): Rect = runCatchin
     val processed = processLatex(latex)
     val bounds = JLatexMathDrawable.builder(processed)
         .textSize(fontSizePx)
-        .padding(0)
+        .padding(latexDrawablePaddingPx)
         .build()
         .bounds
     if (bounds.width() > 0 && bounds.height() > 0) {
@@ -744,15 +834,194 @@ private fun assumeLatexSize(latex: String, fontSizePx: Float): Rect = runCatchin
 }.getOrDefault(Rect(0, 0, 0, 0))
 
 private fun processLatex(raw: String): String {
-    val text = raw.trim()
-    return when {
+    var text = raw.trim()
+    text = when {
         text.startsWith("$$") && text.endsWith("$$") -> text.removeSurrounding("$$").trim()
         text.startsWith("$") && text.endsWith("$") -> text.removeSurrounding("$").trim()
         text.startsWith("\\(") && text.endsWith("\\)") -> text.removeSurrounding("\\(", "\\)").trim()
         text.startsWith("\\[") && text.endsWith("\\]") -> text.removeSurrounding("\\[", "\\]").trim()
         else -> text
     }
+    text = text
+        .replace(Regex("""\\\\(?=[A-Za-z])"""), "\\")
+        .replace("\\\\(", "\\(")
+        .replace("\\\\)", "\\)")
+        .replace("\\\\[", "\\[")
+        .replace("\\\\]", "\\]")
+    return replaceLatexCommandBody(text, "\\ce") { renderChemicalFormulaForLatex(it) }
 }
+
+private fun nodesContainDisplayInlineMath(nodes: List<ASTNode>, content: String): Boolean {
+    return nodes.any { node ->
+        if (node.type == GFMElementTypes.INLINE_MATH && shouldDisplayInlineMath(node.getTextInNode(content))) {
+            true
+        } else {
+            nodesContainDisplayInlineMath(node.children, content)
+        }
+    }
+}
+
+private fun shouldDisplayInlineMath(formula: String): Boolean {
+    val processed = processLatex(formula)
+    if (processed.contains("\\begin{matrix}") ||
+        processed.contains("\\begin{pmatrix}") ||
+        processed.contains("\\begin{bmatrix}") ||
+        processed.contains("\\begin{vmatrix}") ||
+        processed.contains("\\begin{Vmatrix}") ||
+        processed.contains("\\begin{array}") ||
+        processed.contains("\\dfrac") ||
+        processed.contains("\\displaystyle")
+    ) {
+        return true
+    }
+    val bounds = assumeLatexSize(processed, 16f)
+    return bounds.height() > 38 || bounds.width() > 520
+}
+
+private fun replaceLatexCommandBody(
+    input: String,
+    command: String,
+    transform: (String) -> String,
+): String {
+    if (!input.contains(command)) return input
+    val output = StringBuilder(input.length)
+    var index = 0
+    while (index < input.length) {
+        val commandIndex = input.indexOf(command, startIndex = index)
+        if (commandIndex < 0) {
+            output.append(input, index, input.length)
+            break
+        }
+        output.append(input, index, commandIndex)
+        var cursor = commandIndex + command.length
+        while (cursor < input.length && input[cursor].isWhitespace()) cursor++
+        if (cursor >= input.length || input[cursor] != '{') {
+            output.append(command)
+            index = commandIndex + command.length
+            continue
+        }
+        val bodyStart = cursor + 1
+        var depth = 1
+        cursor++
+        while (cursor < input.length && depth > 0) {
+            when (input[cursor]) {
+                '{' -> depth++
+                '}' -> depth--
+            }
+            cursor++
+        }
+        if (depth != 0) {
+            output.append(input, commandIndex, input.length)
+            break
+        }
+        val body = input.substring(bodyStart, cursor - 1)
+        output.append(transform(body))
+        index = cursor
+    }
+    return output.toString()
+}
+
+private fun renderChemicalFormulaForLatex(raw: String): String {
+    val text = raw.trim()
+    val output = StringBuilder(text.length * 2)
+    var index = 0
+    var atTermStart = true
+    while (index < text.length) {
+        when {
+            text.startsWith("<->", index) || text.startsWith("<=>", index) -> {
+                output.append(" \\leftrightarrow ")
+                index += 3
+                atTermStart = true
+            }
+            text.startsWith("->", index) || text.startsWith("=>", index) -> {
+                output.append(" \\rightarrow ")
+                index += 2
+                atTermStart = true
+            }
+            text[index].isWhitespace() -> {
+                if (output.isNotEmpty() && !output.endsWithSpace()) output.append(' ')
+                index++
+            }
+            text[index] == '+' -> {
+                output.append(" + ")
+                index++
+                atTermStart = true
+            }
+            text[index] == '-' -> {
+                output.append(" - ")
+                index++
+                atTermStart = true
+            }
+            text[index] == '^' || text[index] == '_' -> {
+                val marker = text[index]
+                val parsed = parseChemScript(text, index + 1)
+                output.append(marker).append('{').append(parsed.first).append('}')
+                index = parsed.second
+                atTermStart = false
+            }
+            text[index].isDigit() -> {
+                val start = index
+                while (index < text.length && text[index].isDigit()) index++
+                val digits = text.substring(start, index)
+                if (atTermStart) {
+                    output.append(digits)
+                } else {
+                    output.append("_{").append(digits).append('}')
+                }
+                atTermStart = false
+            }
+            text[index].isLetter() -> {
+                val start = index
+                while (index < text.length && text[index].isLetter()) index++
+                output.append("\\mathrm{").append(text.substring(start, index)).append('}')
+                atTermStart = false
+            }
+            text[index] == '(' -> {
+                val end = text.indexOf(')', startIndex = index + 1)
+                if (end > index) {
+                    output.append("\\mathrm{").append(text.substring(index, end + 1)).append('}')
+                    index = end + 1
+                } else {
+                    output.append("\\mathrm{(}")
+                    index++
+                }
+                atTermStart = false
+            }
+            text[index] == '\\' -> {
+                val start = index
+                index++
+                while (index < text.length && text[index].isLetter()) index++
+                output.append(text.substring(start, index))
+                atTermStart = false
+            }
+            else -> {
+                output.append(text[index])
+                atTermStart = false
+                index++
+            }
+        }
+    }
+    return output.toString().trim()
+}
+
+private fun parseChemScript(text: String, start: Int): Pair<String, Int> {
+    if (start >= text.length) return "" to start
+    if (text[start] == '{') {
+        var depth = 1
+        var cursor = start + 1
+        while (cursor < text.length && depth > 0) {
+            when (text[cursor]) {
+                '{' -> depth++
+                '}' -> depth--
+            }
+            cursor++
+        }
+        if (depth == 0) return text.substring(start + 1, cursor - 1) to cursor
+    }
+    return text[start].toString() to (start + 1)
+}
+
+private fun StringBuilder.endsWithSpace(): Boolean = isNotEmpty() && this[length - 1].isWhitespace()
 
 private fun resolvedFontSize(style: TextStyle, override: TextUnit = TextUnit.Unspecified): TextUnit {
     if (override.isSpecified) return override
@@ -833,9 +1102,9 @@ private fun saveCsvToDownloads(context: Context, fileName: String, csv: String):
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
         }
         val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("无法创建下载文件")
+            ?: error(uiText("无法创建下载文件"))
         context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-            ?: error("无法写入下载文件")
+            ?: error(uiText("无法写入下载文件"))
     } else {
         val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (!dir.exists()) dir.mkdirs()
@@ -872,3 +1141,4 @@ private fun List<ASTNode>.trimMarkdownMarkers(type: IElementType, size: Int): Li
     }
     return subList(start, end)
 }
+

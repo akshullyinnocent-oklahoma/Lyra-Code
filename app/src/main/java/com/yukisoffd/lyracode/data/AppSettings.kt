@@ -20,15 +20,13 @@ data class ApiProfile(
     val name: String,
     val apiKey: String,
     val baseUrl: String,
+    val chatPath: String = DEFAULT_OPENAI_CHAT_PATH,
     val apiFormat: String = API_FORMAT_OPENAI,
     val selectedModel: String,
     val savedModels: List<String>,
 ) {
     val chatEndpoint: String
-        get() = when (apiFormat) {
-            API_FORMAT_ANTHROPIC -> "${baseUrl.trimEnd('/')}/messages"
-            else -> "${baseUrl.trimEnd('/')}/chat/completions"
-        }
+        get() = "${baseUrl.trimEnd('/')}${normalizedChatPath(apiFormat, chatPath)}"
 
     val modelsEndpoint: String
         get() = "${baseUrl.trimEnd('/')}/models"
@@ -39,9 +37,23 @@ data class ApiProfile(
     }
 
     companion object {
+        const val DEFAULT_OPENAI_CHAT_PATH = "/chat/completions"
+        const val DEFAULT_ANTHROPIC_CHAT_PATH = "/messages"
         const val API_FORMAT_OPENAI = "openai"
         const val API_FORMAT_ANTHROPIC = "anthropic_messages"
         const val API_FORMAT_GEMINI = "gemini_generate_content"
+
+        fun defaultChatPath(apiFormat: String): String = when (apiFormat) {
+            API_FORMAT_ANTHROPIC -> DEFAULT_ANTHROPIC_CHAT_PATH
+            API_FORMAT_GEMINI -> "/models/{model}:generateContent"
+            else -> DEFAULT_OPENAI_CHAT_PATH
+        }
+
+        fun normalizedChatPath(apiFormat: String, value: String): String {
+            val fallback = defaultChatPath(apiFormat)
+            val trimmed = value.trim().ifBlank { fallback }
+            return if (trimmed.startsWith("/")) trimmed else "/$trimmed"
+        }
     }
 }
 
@@ -59,6 +71,15 @@ data class SkillPack(
     val description: String,
     val enabled: Boolean,
     val fileCount: Int,
+)
+
+data class SubAgentConfig(
+    val id: String,
+    val name: String,
+    val profileId: String,
+    val model: String,
+    val description: String,
+    val enabled: Boolean,
 )
 
 data class RoleplayScenario(
@@ -203,6 +224,14 @@ class AppSettings(context: Context) {
         get() = plainPrefs.getBoolean(KEY_DYNAMIC_COLOR_ENABLED, false)
         set(value) = plainPrefs.edit().putBoolean(KEY_DYNAMIC_COLOR_ENABLED, value).apply()
 
+    var languageMode: String
+        get() = normalizeLanguageMode(
+            plainPrefs.getString(KEY_LANGUAGE_MODE, LANGUAGE_SYSTEM)
+                .orEmpty()
+                .ifBlank { LANGUAGE_SYSTEM },
+        )
+        set(value) = plainPrefs.edit().putString(KEY_LANGUAGE_MODE, normalizeLanguageMode(value)).apply()
+
     var refreshRateMode: String
         get() = plainPrefs.getString(KEY_REFRESH_RATE_MODE, REFRESH_RATE_SYSTEM)
             .orEmpty()
@@ -264,9 +293,18 @@ class AppSettings(context: Context) {
         get() = plainPrefs.getString(KEY_USER_AVATAR_PATH, null)
         set(value) = plainPrefs.edit().putString(KEY_USER_AVATAR_PATH, value).apply()
 
+    var streamingAnimationMode: String
+        get() = normalizeStreamingAnimationMode(
+            plainPrefs.getString(KEY_STREAMING_ANIMATION_MODE, STREAMING_ANIMATION_TYPEWRITER).orEmpty(),
+        )
+        set(value) = plainPrefs.edit().putString(KEY_STREAMING_ANIMATION_MODE, normalizeStreamingAnimationMode(value)).apply()
     var chatBackgroundPath: String?
         get() = plainPrefs.getString(KEY_CHAT_BACKGROUND_PATH, null)
         set(value) = plainPrefs.edit().putString(KEY_CHAT_BACKGROUND_PATH, value).apply()
+
+    var chatBackgroundMaskOpacity: Float
+        get() = plainPrefs.getFloat(KEY_CHAT_BACKGROUND_MASK_OPACITY, DEFAULT_CHAT_BACKGROUND_MASK_OPACITY).coerceIn(0f, 1f)
+        set(value) = plainPrefs.edit().putFloat(KEY_CHAT_BACKGROUND_MASK_OPACITY, value.coerceIn(0f, 1f)).apply()
 
     var hideTermuxPermissionHint: Boolean
         get() = plainPrefs.getBoolean(KEY_HIDE_TERMUX_PERMISSION_HINT, false)
@@ -288,6 +326,26 @@ class AppSettings(context: Context) {
         plainPrefs.edit().putStringSet(KEY_DISABLED_TOOLS, updated).apply()
     }
 
+
+    fun chatInputDraft(key: String): String {
+        return plainPrefs.getString("$KEY_CHAT_INPUT_DRAFT_PREFIX$key", "").orEmpty()
+    }
+
+    fun setChatInputDraft(key: String, text: String) {
+        val cleanKey = key.trim().ifBlank { "normal:0" }
+        val prefsKey = "$KEY_CHAT_INPUT_DRAFT_PREFIX$cleanKey"
+        val editor = plainPrefs.edit()
+        if (text.isBlank()) editor.remove(prefsKey) else editor.putString(prefsKey, text)
+        editor.apply()
+    }
+
+    fun clearChatInputDrafts() {
+        val editor = plainPrefs.edit()
+        plainPrefs.all.keys
+            .filter { it.startsWith(KEY_CHAT_INPUT_DRAFT_PREFIX) }
+            .forEach { editor.remove(it) }
+        editor.apply()
+    }
     fun hiddenTodoSignature(conversationId: Long): String {
         return plainPrefs.getString("$KEY_HIDDEN_TODO_SIGNATURE_PREFIX$conversationId", "").orEmpty()
     }
@@ -318,6 +376,34 @@ class AppSettings(context: Context) {
             KEY_REASONING_DEPTH,
             value.takeIf { it in reasoningDepthValues } ?: REASONING_AUTO,
         ).apply()
+
+    var subAgentOrchestrationEnabled: Boolean
+        get() = plainPrefs.getBoolean(KEY_SUB_AGENT_ORCHESTRATION_ENABLED, false)
+        set(value) = plainPrefs.edit().putBoolean(KEY_SUB_AGENT_ORCHESTRATION_ENABLED, value).apply()
+
+    fun subAgents(): List<SubAgentConfig> {
+        val raw = plainPrefs.getString(KEY_SUB_AGENT_CONFIGS, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching { parseSubAgents(JSONArray(raw)) }.getOrDefault(emptyList())
+    }
+
+    fun enabledSubAgents(): List<SubAgentConfig> = subAgents().filter { it.enabled }
+
+    fun saveSubAgents(agents: List<SubAgentConfig>) {
+        val array = JSONArray()
+        agents.forEach { agent ->
+            array.put(
+                JSONObject()
+                    .put("id", agent.id)
+                    .put("name", agent.name)
+                    .put("profileId", agent.profileId)
+                    .put("model", agent.model)
+                    .put("description", agent.description)
+                    .put("enabled", agent.enabled),
+            )
+        }
+        plainPrefs.edit().putString(KEY_SUB_AGENT_CONFIGS, array.toString()).apply()
+    }
 
     var webSearchBlacklistText: String
         get() = plainPrefs.getString(KEY_WEB_SEARCH_BLACKLIST, "").orEmpty()
@@ -466,6 +552,7 @@ class AppSettings(context: Context) {
                             name = item.optString("name").ifBlank { "OpenAI" },
                             apiKey = item.optString("apiKey"),
                             baseUrl = item.optString("baseUrl").ifBlank { DEFAULT_BASE_URL },
+                            chatPath = ApiProfile.normalizedChatPath(apiFormat, item.optString("chatPath")),
                             apiFormat = apiFormat,
                             selectedModel = item.optString("selectedModel").ifBlank { DEFAULT_MODEL },
                             savedModels = savedModels,
@@ -485,6 +572,7 @@ class AppSettings(context: Context) {
                     .put("name", profile.name)
                     .put("apiKey", profile.apiKey)
                     .put("baseUrl", profile.baseUrl)
+                    .put("chatPath", ApiProfile.normalizedChatPath(profile.apiFormat, profile.chatPath))
                     .put("apiFormat", profile.apiFormat)
                     .put("selectedModel", profile.selectedModel)
                     .put("savedModels", JSONArray(profile.savedModels.distinct()))
@@ -650,19 +738,26 @@ class AppSettings(context: Context) {
         description?.trim()?.takeIf { it.isNotBlank() }?.let { File(dir, SKILL_DESCRIPTION_FILE).writeText(it) }
     }
 
-    fun activeSkillsPrompt(): String {
-        val enabled = installedSkills().filter { it.enabled }
-        if (enabled.isEmpty()) return "enabled_skills=[]"
+    fun activeSkillsPrompt(forcedSkillIds: Collection<String> = emptyList()): String {
+        val forcedIds = forcedSkillIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        val installed = installedSkills()
+        val skills = (installed.filter { it.enabled } + installed.filter { it.id in forcedIds })
+            .distinctBy { it.id }
+        if (skills.isEmpty()) return "enabled_skills=[]"
         return buildString {
             appendLine("enabled_skills=[")
-            enabled.forEach { skill ->
+            skills.forEach { skill ->
                 appendLine("""  {"id":"${skill.id}","name":"${escapeSkillJson(skill.name)}","description":"${escapeSkillJson(skill.description)}","file_count":${skill.fileCount}},""")
             }
             appendLine("]")
-            appendLine("Use Skills as optional capability references only. First judge relevance from name/description. If a Skill seems useful, call list_skill_files/read_skill_file to inspect SKILL.md and required files. Do not load every Skill blindly. Some Skills may assume desktop/cloud tools unavailable on Android/Termux; adapt them to Lyra Code's Android environment and current tool limits.")
+            if (forcedIds.isNotEmpty()) {
+                appendLine("forced_skill_ids=[${forcedIds.joinToString(",") { "\"${escapeSkillJson(it)}\"" }}]")
+                appendLine("The user explicitly selected forced_skill_ids for this request. You must inspect each forced Skill with list_skill_files/read_skill_file, starting from SKILL.md, and apply relevant instructions unless impossible. If a forced Skill cannot be applied, briefly explain why.")
+            } else {
+                appendLine("Use Skills as optional capability references only. First judge relevance from name/description. If a Skill seems useful, call list_skill_files/read_skill_file to inspect SKILL.md and required files. Do not load every Skill blindly. Some Skills may assume desktop/cloud tools unavailable on Android/Termux; adapt them to Lyra Code's Android environment and current tool limits.")
+            }
         }
     }
-
     fun listSkillFiles(id: String): Result<String> = runCatching {
         val root = skillDir(id)
         root.walkTopDown()
@@ -844,6 +939,7 @@ class AppSettings(context: Context) {
             if (file.isFile) file.delete()
         }
         chatBackgroundPath = null
+        chatBackgroundMaskOpacity = DEFAULT_CHAT_BACKGROUND_MASK_OPACITY
     }
 
     fun updateRoleplayNickname(id: String, nickname: String) {
@@ -1164,6 +1260,7 @@ class AppSettings(context: Context) {
             .put("schema", "lyra_settings_backup_v1")
             .put("themeMode", themeMode)
             .put("dynamicColorEnabled", dynamicColorEnabled)
+            .put("languageMode", languageMode)
             .put("refreshRateMode", refreshRateMode)
             .put("fontScaleMode", fontScaleMode)
             .put("customFontScale", customFontScale.toDouble())
@@ -1172,7 +1269,9 @@ class AppSettings(context: Context) {
             .put("customSuCommand", customSuCommand)
             .put("userNickname", userNickname)
             .put("userAvatarPath", userAvatarPath.orEmpty())
+            .put("streamingAnimationMode", streamingAnimationMode)
             .put("chatBackgroundPath", chatBackgroundPath.orEmpty())
+            .put("chatBackgroundMaskOpacity", chatBackgroundMaskOpacity.toDouble())
             .put("hideTermuxPermissionHint", hideTermuxPermissionHint)
             .put("immersiveRoleplayEnabled", immersiveRoleplayEnabled)
             .put("selectedRoleplayId", selectedRoleplayId)
@@ -1185,6 +1284,20 @@ class AppSettings(context: Context) {
             .put("customSystemPrompts", JSONObject(plainPrefs.getString(KEY_CUSTOM_SYSTEM_PROMPTS, "{}").orEmpty().ifBlank { "{}" }))
             .put("systemPromptConfigs", JSONArray(plainPrefs.getString(KEY_SYSTEM_PROMPT_CONFIGS, "[]").orEmpty().ifBlank { "[]" }))
             .put("reasoningDepth", reasoningDepth)
+            .put("subAgentOrchestrationEnabled", subAgentOrchestrationEnabled)
+            .put("subAgents", JSONArray().also { array ->
+                subAgents().forEach { agent ->
+                    array.put(
+                        JSONObject()
+                            .put("id", agent.id)
+                            .put("name", agent.name)
+                            .put("profileId", agent.profileId)
+                            .put("model", agent.model)
+                            .put("description", agent.description)
+                            .put("enabled", agent.enabled),
+                    )
+                }
+            })
             .put("webSearchBlacklist", webSearchBlacklistText)
             .put("selectedApiProfileId", selectedApiProfileId)
             .put("profiles", JSONArray().also { array ->
@@ -1254,6 +1367,7 @@ class AppSettings(context: Context) {
         val messages = mutableListOf<String>()
         root.optString("themeMode").takeIf { it.isNotBlank() }?.let { themeMode = it }
         if (root.has("dynamicColorEnabled")) dynamicColorEnabled = root.optBoolean("dynamicColorEnabled")
+        root.optString("languageMode").takeIf { it.isNotBlank() }?.let { languageMode = it }
         root.optString("refreshRateMode").takeIf { it.isNotBlank() }?.let { refreshRateMode = it }
         root.optString("fontScaleMode").takeIf { it.isNotBlank() }?.let { fontScaleMode = it }
         if (root.has("customFontScale")) customFontScale = root.optDouble("customFontScale", 1.0).toFloat()
@@ -1262,7 +1376,14 @@ class AppSettings(context: Context) {
         root.optString("customSuCommand").takeIf { it.isNotBlank() }?.let { customSuCommand = it }
         root.optString("userNickname").takeIf { it.isNotBlank() }?.let { userNickname = it }
         root.optString("userAvatarPath").takeIf { it.isNotBlank() }?.let { userAvatarPath = it }
+        root.optString("streamingAnimationMode").takeIf { it.isNotBlank() }?.let { streamingAnimationMode = it }
         root.optString("chatBackgroundPath").takeIf { it.isNotBlank() }?.let { chatBackgroundPath = it }
+        if (root.has("chatBackgroundMaskOpacity")) {
+            chatBackgroundMaskOpacity = root.optDouble(
+                "chatBackgroundMaskOpacity",
+                DEFAULT_CHAT_BACKGROUND_MASK_OPACITY.toDouble(),
+            ).toFloat()
+        }
         if (root.has("hideTermuxPermissionHint")) hideTermuxPermissionHint = root.optBoolean("hideTermuxPermissionHint")
         if (root.has("immersiveRoleplayEnabled")) immersiveRoleplayEnabled = root.optBoolean("immersiveRoleplayEnabled")
         root.optString("selectedRoleplayId").takeIf { it.isNotBlank() }?.let { selectedRoleplayId = it }
@@ -1286,6 +1407,12 @@ class AppSettings(context: Context) {
             messages += "系统提示词 ${imported.size} 项"
         }
         root.optString("reasoningDepth").takeIf { it in reasoningDepthValues }?.let { reasoningDepth = it }
+        if (root.has("subAgentOrchestrationEnabled")) subAgentOrchestrationEnabled = root.optBoolean("subAgentOrchestrationEnabled")
+        root.optJSONArray("subAgents")?.let { array ->
+            val imported = parseSubAgents(array)
+            saveSubAgents(if (supplement) mergeBy(subAgents(), imported) { it.id } else imported)
+            messages += "子代理 ${imported.size} 项"
+        }
         root.optString("webSearchBlacklist").takeIf { it.isNotBlank() }?.let { imported ->
             webSearchBlacklistText = if (supplement) {
                 listOf(webSearchBlacklistText, imported).joinToString("\n")
@@ -1355,6 +1482,7 @@ class AppSettings(context: Context) {
             name = "OpenAI",
             apiKey = apiKey,
             baseUrl = apiEndpoint.removeSuffix("/chat/completions").ifBlank { DEFAULT_BASE_URL },
+            chatPath = ApiProfile.DEFAULT_OPENAI_CHAT_PATH,
             apiFormat = ApiProfile.API_FORMAT_OPENAI,
             selectedModel = model,
             savedModels = listOf(model).filter { it.isNotBlank() }.distinct(),
@@ -1541,9 +1669,29 @@ class AppSettings(context: Context) {
                     name = item.optString("name").ifBlank { "API" },
                     apiKey = item.optString("apiKey"),
                     baseUrl = item.optString("baseUrl").ifBlank { DEFAULT_BASE_URL },
+                    chatPath = ApiProfile.normalizedChatPath(apiFormat, item.optString("chatPath")),
                     apiFormat = apiFormat,
                     selectedModel = item.optString("selectedModel").ifBlank { DEFAULT_MODEL },
                     savedModels = savedModels,
+                ),
+            )
+        }
+    }
+
+    private fun parseSubAgents(array: JSONArray): List<SubAgentConfig> = buildList {
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val profileId = item.optString("profileId")
+            val model = item.optString("model")
+            if (profileId.isBlank() || model.isBlank()) continue
+            add(
+                SubAgentConfig(
+                    id = item.optString("id").ifBlank { newId() },
+                    name = item.optString("name").ifBlank { "子代理模型" },
+                    profileId = profileId,
+                    model = model,
+                    description = item.optString("description"),
+                    enabled = if (item.has("enabled")) item.optBoolean("enabled") else true,
                 ),
             )
         }
@@ -1826,6 +1974,7 @@ class AppSettings(context: Context) {
         private const val KEY_DARK_MODE = "dark_mode"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_DYNAMIC_COLOR_ENABLED = "dynamic_color_enabled"
+        private const val KEY_LANGUAGE_MODE = "language_mode"
         private const val KEY_REFRESH_RATE_MODE = "refresh_rate_mode"
         private const val KEY_DOWNLOAD_COMPLETION_NOTIFICATIONS = "download_completion_notifications"
         private const val KEY_MINI_SERVER_CONFIG = "mini_server_config"
@@ -1837,15 +1986,21 @@ class AppSettings(context: Context) {
         private const val KEY_USER_NICKNAME = "user_nickname"
         private const val KEY_USER_AVATAR_PATH = "user_avatar_path"
         private const val KEY_CHAT_BACKGROUND_PATH = "chat_background_path"
+        private const val KEY_STREAMING_ANIMATION_MODE = "streaming_animation_mode"
+        private const val KEY_CHAT_BACKGROUND_MASK_OPACITY = "chat_background_mask_opacity"
+        private const val DEFAULT_CHAT_BACKGROUND_MASK_OPACITY = 0.58f
         private const val KEY_HIDE_TERMUX_PERMISSION_HINT = "hide_termux_permission_hint"
         private const val KEY_DISABLED_TOOLS = "disabled_tools"
         private const val KEY_HIDDEN_TODO_SIGNATURE_PREFIX = "hidden_todo_signature_"
+        private const val KEY_CHAT_INPUT_DRAFT_PREFIX = "chat_input_draft_"
         private const val KEY_HIDDEN_FILE_CHANGES_SIGNATURE_PREFIX = "hidden_file_changes_signature_"
         private const val KEY_ENABLED_SKILLS = "enabled_skills"
         private const val KEY_SELECTED_SYSTEM_PROMPT_ID = "selected_system_prompt_id"
         private const val KEY_CUSTOM_SYSTEM_PROMPTS = "custom_system_prompts"
         private const val KEY_SYSTEM_PROMPT_CONFIGS = "system_prompt_configs"
         private const val KEY_REASONING_DEPTH = "reasoning_depth"
+        private const val KEY_SUB_AGENT_ORCHESTRATION_ENABLED = "sub_agent_orchestration_enabled"
+        private const val KEY_SUB_AGENT_CONFIGS = "sub_agent_configs"
         private const val KEY_WEB_SEARCH_BLACKLIST = "web_search_blacklist"
         private const val KEY_MCP_SERVERS = "mcp_servers"
         private const val KEY_LOCAL_MCP_SERVER = "local_mcp_server"
@@ -1869,9 +2024,19 @@ class AppSettings(context: Context) {
         private const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
         private const val DEFAULT_MODEL = "gpt-4o-mini"
         private const val DEFAULT_SYSTEM_PROMPT_ID = "default"
+        const val STREAMING_ANIMATION_TYPEWRITER = "typewriter"
+        const val STREAMING_ANIMATION_FADE = "fade"
+
+        fun normalizeStreamingAnimationMode(value: String): String = when (value.trim().lowercase()) {
+            STREAMING_ANIMATION_FADE -> STREAMING_ANIMATION_FADE
+            else -> STREAMING_ANIMATION_TYPEWRITER
+        }
         const val THEME_SYSTEM = "system"
         const val THEME_LIGHT = "light"
         const val THEME_DARK = "dark"
+        const val LANGUAGE_SYSTEM = "system"
+        const val LANGUAGE_ZH_CN = "zh-CN"
+        const val LANGUAGE_EN = "en"
         const val REFRESH_RATE_SYSTEM = "system"
         const val REFRESH_RATE_30 = "30"
         const val REFRESH_RATE_60 = "60"
@@ -1908,6 +2073,12 @@ class AppSettings(context: Context) {
         const val FILE_TRANSFER_FTP = "ftp"
         const val FILE_TRANSFER_FTPS = "ftps"
         const val FILE_TRANSFER_SFTP = "sftp"
+
+        fun normalizeLanguageMode(value: String): String = when (value.trim()) {
+            LANGUAGE_ZH_CN -> LANGUAGE_ZH_CN
+            LANGUAGE_EN -> LANGUAGE_EN
+            else -> LANGUAGE_SYSTEM
+        }
 
         fun normalizeFileTransferProtocol(value: String): String = when (value.trim().lowercase()) {
             FILE_TRANSFER_FTPS -> FILE_TRANSFER_FTPS
