@@ -22,6 +22,7 @@ jobs:
           cache: 'gradle' 
 
       # Dynamically injects a cloud-translation pass right before building
+      # Excludes XML files to prevent corrupting Android resource tokens and escape structures
       - name: Auto-Translate Codebase to English
         shell: python
         run: |
@@ -55,7 +56,8 @@ jobs:
               if any(p in root for p in [".git", ".github", "build", ".gradle"]):
                   continue
               for file in files:
-                  if file.endswith(('.kt', '.xml', '.json', '.txt', '.java', '.properties')):
+                  # Removed '.xml' from this tuple to preserve Android Resource integrity
+                  if file.endswith(('.kt', '.json', '.txt', '.java', '.properties')):
                       path = os.path.join(root, file)
                       try:
                           with open(path, 'r', encoding='utf-8') as f:
@@ -89,13 +91,6 @@ jobs:
       - name: Build APK (armeabi-v7a only)
         run: ./gradlew assembleDebug -Pandroid.injected.abi=armeabi-v7a --stacktrace
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-apk-output
-          path: "**/build/outputs/apk/**/*.apk"
-      # Glob patterns (**) mean GitHub will search all build directories 
-      # and grab whatever debug APK was generated, no matter the module layout.
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
