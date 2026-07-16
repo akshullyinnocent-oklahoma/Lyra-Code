@@ -1,0 +1,103 @@
+name: Universal Android Debug Build
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build armv7a Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java & Cache Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21' 
+          cache: 'gradle' 
+
+      # Dynamically injects a cloud-translation pass right before building
+      - name: Auto-Translate Codebase to English
+        shell: python
+        run: |
+          import os
+          import re
+          import json
+          import urllib.request
+          import urllib.parse
+
+          chinese_regex = re.compile(r'[\u4e00-\u9fa5]+')
+          cache = {}
+
+          def get_translation(text):
+              if text in cache:
+                  return cache[text]
+              try:
+                  url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t&q=" + urllib.parse.quote(text)
+                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=5) as r:
+                      res = json.loads(r.read().decode('utf-8'))
+                      translated = "".join([part[0] for part in res[0] if part[0]])
+                      print(f"  Translated: '{text}' -> '{translated}'")
+                      cache[text] = translated
+                      return translated
+              except Exception as e:
+                  print(f"  Failed translating '{text}': {e}")
+                  return text
+
+          print("🚀 Starting repository auto-translation...")
+          for root, dirs, files in os.walk("."):
+              if any(p in root for p in [".git", ".github", "build", ".gradle"]):
+                  continue
+              for file in files:
+                  if file.endswith(('.kt', '.xml', '.json', '.txt', '.java', '.properties')):
+                      path = os.path.join(root, file)
+                      try:
+                          with open(path, 'r', encoding='utf-8') as f:
+                              content = f.read()
+                          
+                          # Grabs all unique Chinese blocks, sorting longest first to prevent fracturing words
+                          matches = sorted(list(set(chinese_regex.findall(content))), key=len, reverse=True)
+                          if not matches:
+                              continue
+                          
+                          print(f"Translating characters in: {path}")
+                          for match in matches:
+                              trans = get_translation(match)
+                              if trans != match:
+                                  content = content.replace(match, trans)
+                                  
+                          with open(path, 'w', encoding='utf-8') as f:
+                              f.write(content)
+                      except Exception:
+                          pass
+          print("✅ Auto-translation complete!")
+
+      - name: Create Missing Server Key Placeholder
+        run: |
+          mkdir -p app/src/main/res/raw
+          touch app/src/main/res/raw/lyra_mini_server
+
+      - name: Make Gradle Executable
+        run: chmod +x ./gradlew
+
+      - name: Build APK (armeabi-v7a only)
+        run: ./gradlew assembleDebug -Pandroid.injected.abi=armeabi-v7a --stacktrace
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-output
+          path: "**/build/outputs/apk/**/*.apk"
+      # Glob patterns (**) mean GitHub will search all build directories 
+      # and grab whatever debug APK was generated, no matter the module layout.
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-output
+          path: "**/build/outputs/apk/**/*.apk"
