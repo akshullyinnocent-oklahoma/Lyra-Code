@@ -29,10 +29,14 @@ data class ApiProfile(
         const val API_FORMAT_OPENAI = "openai"
         const val API_FORMAT_ANTHROPIC = "anthropic_messages"
         const val API_FORMAT_GEMINI = "gemini_generate_content"
+        const val API_FORMAT_NVIDIA_NIM = "nvidia_nim"
+        const val API_FORMAT_OPENROUTER = "openrouter"
 
         fun defaultChatPath(apiFormat: String): String = when (apiFormat) {
             API_FORMAT_ANTHROPIC -> DEFAULT_ANTHROPIC_CHAT_PATH
             API_FORMAT_GEMINI -> "/models/{model}:generateContent"
+            API_FORMAT_NVIDIA_NIM -> DEFAULT_OPENAI_CHAT_PATH
+            API_FORMAT_OPENROUTER -> DEFAULT_OPENAI_CHAT_PATH
             else -> DEFAULT_OPENAI_CHAT_PATH
         }
 

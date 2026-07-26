@@ -2,13 +2,16 @@ name: Universal Android Debug Build
 
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     name: Build armv7a Debug APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Code
@@ -18,118 +21,8 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21' 
-          cache: 'gradle' 
-
-      # Dynamically injects a cloud-translation pass right before building
-      # XML string resources are translated carefully to preserve Android resource tokens and structure
-      - name: Auto-Translate Codebase to English
-        shell: python
-        run: |
-          import os
-          import re
-          import json
-          import urllib.request
-          import urllib.parse
-          import xml.etree.ElementTree as ET
-
-          chinese_regex = re.compile(r'[\u4e00-\u9fa5]+')
-          cache = {}
-
-          def get_translation(text):
-              if text in cache:
-                  return cache[text]
-              try:
-                  url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=en&dt=t&q=" + urllib.parse.quote(text)
-                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                  with urllib.request.urlopen(req, timeout=5) as r:
-                      res = json.loads(r.read().decode('utf-8'))
-                      translated = "".join([part[0] for part in res[0] if part[0]])
-                      print(f"  Translated: '{text}' -> '{translated}'")
-                      cache[text] = translated
-                      return translated
-              except Exception as e:
-                  print(f"  Failed translating '{text}': {e}")
-                  return text
-
-          def translate_xml_string_resource(path):
-              """Translate text content of <string> and <string-array> items in XML, preserving structure."""
-              try:
-                  tree = ET.parse(path)
-                  root = tree.getroot()
-                  changed = False
-                  namespace = {'ns': 'http://schemas.android.com/apk/res/android'}
-
-                  for elem in root.iter():
-                      # Translate 'name' attribute if it contains Chinese
-                      if elem.get('name') and chinese_regex.search(elem.get('name')):
-                          translated = get_translation(elem.get('name'))
-                          if translated != elem.get('name'):
-                              elem.set('name', translated)
-                              changed = True
-
-                      # Translate text content of <string> elements
-                      if elem.tag == 'string' and elem.text and chinese_regex.search(elem.text):
-                          translated = get_translation(elem.text)
-                          if translated != elem.text:
-                              elem.text = translated
-                              changed = True
-
-                      # Translate items in <string-array>
-                      if elem.tag == 'item' and elem.text and chinese_regex.search(elem.text):
-                          translated = get_translation(elem.text)
-                          if translated != elem.text:
-                              elem.text = translated
-                              changed = True
-
-                  if changed:
-                      tree.write(path, encoding='unicode', xml_declaration=True)
-                      # Re-add proper Android XML header
-                      with open(path, 'r', encoding='utf-8') as f:
-                          original = f.read()
-                      # Ensure proper XML declaration with encoding
-                      content = '<?xml version="1.0" encoding="utf-8"?>
-' + re.sub(r'^<\?xml[^?]+\?>\n?', '', original)
-                      with open(path, 'w', encoding='utf-8') as f:
-                          f.write(content)
-                      print(f"  Translated XML: {path}")
-                  return changed
-              except ET.ParseError as e:
-                  print(f"  XML parse error in {path}: {e}")
-                  return False
-              except Exception as e:
-                  print(f"  Error translating XML {path}: {e}")
-                  return False
-
-          print("🚀 Starting repository auto-translation...")
-          for root, dirs, files in os.walk("."):
-              if any(p in root for p in [".git", ".github", "build", ".gradle"]):
-                  continue
-              for file in files:
-                  if file.endswith(('.kt', '.json', '.txt', '.java', '.properties')):
-                      path = os.path.join(root, file)
-                      try:
-                          with open(path, 'r', encoding='utf-8') as f:
-                              content = f.read()
-                          matches = sorted(list(set(chinese_regex.findall(content))), key=len, reverse=True)
-                          if not matches:
-                              continue
-                          print(f"Translating code in: {path}")
-                          for match in matches:
-                              trans = get_translation(match)
-                              if trans != match:
-                                  content = content.replace(match, trans)
-                          with open(path, 'w', encoding='utf-8') as f:
-                              f.write(content)
-                      except Exception:
-                          pass
-                  elif file.endswith('.xml') and 'values' in root and 'strings' in file:
-                      path = os.path.join(root, file)
-                      try:
-                          translate_xml_string_resource(path)
-                      except Exception:
-                          pass
-          print("✅ Auto-translation complete!")
+          java-version: '21'
+          cache: 'gradle'
 
       - name: Create Missing Server Key Placeholder
         run: |

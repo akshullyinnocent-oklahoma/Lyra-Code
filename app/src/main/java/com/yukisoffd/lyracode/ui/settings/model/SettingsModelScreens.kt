@@ -415,6 +415,16 @@ internal fun ModelServiceSettings(
                             if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
                             if (chatPath.isBlank() || chatPath in knownProviderChatPaths()) chatPath = ApiProfile.defaultChatPath(it)
                         }
+                        ApiFormatOption("NVIDIA NIM", ApiProfile.API_FORMAT_NVIDIA_NIM, apiFormat) {
+                            apiFormat = it
+                            if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
+                            if (chatPath.isBlank() || chatPath in knownProviderChatPaths()) chatPath = ApiProfile.defaultChatPath(it)
+                        }
+                        ApiFormatOption("OpenRouter", ApiProfile.API_FORMAT_OPENROUTER, apiFormat) {
+                            apiFormat = it
+                            if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
+                            if (chatPath.isBlank() || chatPath in knownProviderChatPaths()) chatPath = ApiProfile.defaultChatPath(it)
+                        }
                         ApiFormatOption("Anthropic Messages", ApiProfile.API_FORMAT_ANTHROPIC, apiFormat) {
                             apiFormat = it
                             if (baseUrl.isBlank() || baseUrl in knownProviderBaseUrls()) baseUrl = defaultBaseUrlForApiFormat(it)
@@ -1012,6 +1022,8 @@ internal fun formatReachabilityLatency(latencyMs: Long): String {
 internal fun defaultBaseUrlForApiFormat(format: String): String = when (format) {
     ApiProfile.API_FORMAT_ANTHROPIC -> "https://api.anthropic.com/v1"
     ApiProfile.API_FORMAT_GEMINI -> "https://generativelanguage.googleapis.com/v1beta"
+    ApiProfile.API_FORMAT_NVIDIA_NIM -> "https://api.nvidia.com/v1"
+    ApiProfile.API_FORMAT_OPENROUTER -> "https://openrouter.ai/api/v1"
     else -> "https://api.openai.com/v1"
 }
 
@@ -1034,27 +1046,31 @@ internal fun knownProviderChatPaths(): Set<String> = setOf(
 internal fun providerDisplayName(baseUrl: String): String {
     val trimmed = baseUrl.trim().trimEnd('/')
     return when {
-        "openrouter" in trimmed.lowercase() -> "OpenRouter"
         "nvidia.com" in trimmed.lowercase() -> "NVIDIA NIM"
+        "openrouter" in trimmed.lowercase() -> "OpenRouter"
         "groq" in trimmed.lowercase() -> "Groq"
         "cerebras" in trimmed.lowercase() -> "Cerebras"
         "googleapis" in trimmed.lowercase() -> "Google Gemini"
         "anthropic" in trimmed.lowercase() -> "Anthropic"
         "openai" in trimmed.lowercase() -> "OpenAI"
-        else -> uiText("自定义")
+        else -> uiText("Custom")
     }
 }
 
 internal fun apiKeyLabel(format: String): String = when (format) {
     ApiProfile.API_FORMAT_ANTHROPIC -> "Anthropic API Key"
     ApiProfile.API_FORMAT_GEMINI -> "Google API Key"
+    ApiProfile.API_FORMAT_NVIDIA_NIM -> "NVIDIA NIM API Key"
+    ApiProfile.API_FORMAT_OPENROUTER -> "OpenRouter API Key"
     else -> "API Key"
 }
 
 internal fun apiFormatDescription(format: String): String = when (format) {
-    ApiProfile.API_FORMAT_ANTHROPIC -> uiText("适用于 Claude 官方 Messages API 或兼容 Anthropic Messages 格式的服务。请求、工具调用和图片输入会按 Anthropic 格式转换。")
-    ApiProfile.API_FORMAT_GEMINI -> uiText("适用于 Gemini 官方 GenerateContent API 或兼容 Gemini 格式的服务。图片、音频、视频会使用 inlineData 传输。")
-    else -> uiText("适用于 OpenAI Chat Completions 兼容平台。已识别的服务商包括 OpenAI、OpenRouter、NVIDIA NIM、Groq 和 Cerebras。原有工具调用、流式输出和多模态 image_url 路径保持不变。")
+    ApiProfile.API_FORMAT_ANTHROPIC -> uiText("Compatible with Claude Messages API and services using the Anthropic Messages format. Tool calls and image inputs are converted to Anthropic format.")
+    ApiProfile.API_FORMAT_GEMINI -> uiText("Compatible with the Gemini GenerateContent API or services using the Gemini format. Images, audio, and video are sent via inlineData.")
+    ApiProfile.API_FORMAT_NVIDIA_NIM -> uiText("Compatible with the NVIDIA NIM inference platform. Uses OpenAI-compatible Chat Completions endpoints. NIM microservices run on NVIDIA hardware with GPU acceleration.")
+    ApiProfile.API_FORMAT_OPENROUTER -> uiText("Compatible with OpenRouter, a unified API gateway for many LLM providers. Supports chat completions, tool calling, and multi-modal inputs.")
+    else -> uiText("Compatible with OpenAI Chat Completions API. Recognized providers include OpenAI, OpenRouter, NVIDIA NIM, Groq, and Cerebras. Tool calling, streaming, and multi-modal image_url paths work as expected.")
 }
 
 internal fun endpointHint(format: String, baseUrl: String, chatPath: String): String {
@@ -1064,5 +1080,13 @@ internal fun endpointHint(format: String, baseUrl: String, chatPath: String): St
         ApiProfile.API_FORMAT_GEMINI -> uiText("请求端点：$root/models/{model}:generateContent；模型列表：$root/models")
         else -> uiText("请求端点：$root$path；模型列表：$root/models")
     }
+}
+
+internal fun apiFormatShortName(format: String): String = when (format) {
+    ApiProfile.API_FORMAT_ANTHROPIC -> "Anthropic"
+    ApiProfile.API_FORMAT_GEMINI -> "Gemini"
+    ApiProfile.API_FORMAT_NVIDIA_NIM -> "NVIDIA NIM"
+    ApiProfile.API_FORMAT_OPENROUTER -> "OpenRouter"
+    else -> "OpenAI"
 }
 
