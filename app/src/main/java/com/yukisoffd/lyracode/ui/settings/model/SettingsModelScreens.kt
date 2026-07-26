@@ -1019,6 +1019,10 @@ internal fun knownProviderBaseUrls(): Set<String> = setOf(
     "https://api.openai.com/v1",
     "https://api.anthropic.com/v1",
     "https://generativelanguage.googleapis.com/v1beta",
+    "https://openrouter.ai/api/v1",
+    "https://api.nvidia.com/v1",
+    "https://api.groq.com/openai/v1",
+    "https://api.cerebras.ai/v1",
 )
 
 internal fun knownProviderChatPaths(): Set<String> = setOf(
@@ -1026,6 +1030,21 @@ internal fun knownProviderChatPaths(): Set<String> = setOf(
     ApiProfile.DEFAULT_ANTHROPIC_CHAT_PATH,
     "/models/{model}:generateContent",
 )
+
+internal fun providerDisplayName(baseUrl: String): String {
+    val trimmed = baseUrl.trim().trimEnd('/')
+    return when {
+        "openrouter" in trimmed.lowercase() -> "OpenRouter"
+        "nvidia.com" in trimmed.lowercase() -> "NVIDIA NIM"
+        "groq" in trimmed.lowercase() -> "Groq"
+        "cerebras" in trimmed.lowercase() -> "Cerebras"
+        "googleapis" in trimmed.lowercase() -> "Google Gemini"
+        "anthropic" in trimmed.lowercase() -> "Anthropic"
+        "openai" in trimmed.lowercase() -> "OpenAI"
+        else -> uiText("自定义")
+    }
+}
+
 internal fun apiKeyLabel(format: String): String = when (format) {
     ApiProfile.API_FORMAT_ANTHROPIC -> "Anthropic API Key"
     ApiProfile.API_FORMAT_GEMINI -> "Google API Key"
@@ -1035,7 +1054,7 @@ internal fun apiKeyLabel(format: String): String = when (format) {
 internal fun apiFormatDescription(format: String): String = when (format) {
     ApiProfile.API_FORMAT_ANTHROPIC -> uiText("适用于 Claude 官方 Messages API 或兼容 Anthropic Messages 格式的服务。请求、工具调用和图片输入会按 Anthropic 格式转换。")
     ApiProfile.API_FORMAT_GEMINI -> uiText("适用于 Gemini 官方 GenerateContent API 或兼容 Gemini 格式的服务。图片、音频、视频会使用 inlineData 传输。")
-    else -> uiText("适用于 OpenAI Chat Completions SDK 兼容平台。原有工具调用、流式输出和多模态 image_url 路径保持不变。")
+    else -> uiText("适用于 OpenAI Chat Completions 兼容平台。已识别的服务商包括 OpenAI、OpenRouter、NVIDIA NIM、Groq 和 Cerebras。原有工具调用、流式输出和多模态 image_url 路径保持不变。")
 }
 
 internal fun endpointHint(format: String, baseUrl: String, chatPath: String): String {

@@ -22,7 +22,7 @@ jobs:
           cache: 'gradle' 
 
       # Dynamically injects a cloud-translation pass right before building
-      # Excludes XML files to prevent corrupting Android resource tokens and escape structures
+      # XML string resources are translated carefully to preserve Android resource tokens and structure
       - name: Auto-Translate Codebase to English
         shell: python
         run: |
@@ -31,6 +31,7 @@ jobs:
           import json
           import urllib.request
           import urllib.parse
+          import xml.etree.ElementTree as ET
 
           chinese_regex = re.compile(r'[\u4e00-\u9fa5]+')
           cache = {}
@@ -51,31 +52,81 @@ jobs:
                   print(f"  Failed translating '{text}': {e}")
                   return text
 
+          def translate_xml_string_resource(path):
+              """Translate text content of <string> and <string-array> items in XML, preserving structure."""
+              try:
+                  tree = ET.parse(path)
+                  root = tree.getroot()
+                  changed = False
+                  namespace = {'ns': 'http://schemas.android.com/apk/res/android'}
+
+                  for elem in root.iter():
+                      # Translate 'name' attribute if it contains Chinese
+                      if elem.get('name') and chinese_regex.search(elem.get('name')):
+                          translated = get_translation(elem.get('name'))
+                          if translated != elem.get('name'):
+                              elem.set('name', translated)
+                              changed = True
+
+                      # Translate text content of <string> elements
+                      if elem.tag == 'string' and elem.text and chinese_regex.search(elem.text):
+                          translated = get_translation(elem.text)
+                          if translated != elem.text:
+                              elem.text = translated
+                              changed = True
+
+                      # Translate items in <string-array>
+                      if elem.tag == 'item' and elem.text and chinese_regex.search(elem.text):
+                          translated = get_translation(elem.text)
+                          if translated != elem.text:
+                              elem.text = translated
+                              changed = True
+
+                  if changed:
+                      tree.write(path, encoding='unicode', xml_declaration=True)
+                      # Re-add proper Android XML header
+                      with open(path, 'r', encoding='utf-8') as f:
+                          original = f.read()
+                      # Ensure proper XML declaration with encoding
+                      content = '<?xml version="1.0" encoding="utf-8"?>
+' + re.sub(r'^<\?xml[^?]+\?>\n?', '', original)
+                      with open(path, 'w', encoding='utf-8') as f:
+                          f.write(content)
+                      print(f"  Translated XML: {path}")
+                  return changed
+              except ET.ParseError as e:
+                  print(f"  XML parse error in {path}: {e}")
+                  return False
+              except Exception as e:
+                  print(f"  Error translating XML {path}: {e}")
+                  return False
+
           print("🚀 Starting repository auto-translation...")
           for root, dirs, files in os.walk("."):
               if any(p in root for p in [".git", ".github", "build", ".gradle"]):
                   continue
               for file in files:
-                  # Removed '.xml' from this tuple to preserve Android Resource integrity
                   if file.endswith(('.kt', '.json', '.txt', '.java', '.properties')):
                       path = os.path.join(root, file)
                       try:
                           with open(path, 'r', encoding='utf-8') as f:
                               content = f.read()
-                          
-                          # Grabs all unique Chinese blocks, sorting longest first to prevent fracturing words
                           matches = sorted(list(set(chinese_regex.findall(content))), key=len, reverse=True)
                           if not matches:
                               continue
-                          
-                          print(f"Translating characters in: {path}")
+                          print(f"Translating code in: {path}")
                           for match in matches:
                               trans = get_translation(match)
                               if trans != match:
                                   content = content.replace(match, trans)
-                                  
                           with open(path, 'w', encoding='utf-8') as f:
                               f.write(content)
+                      except Exception:
+                          pass
+                  elif file.endswith('.xml') and 'values' in root and 'strings' in file:
+                      path = os.path.join(root, file)
+                      try:
+                          translate_xml_string_resource(path)
                       except Exception:
                           pass
           print("✅ Auto-translation complete!")
