@@ -52,45 +52,43 @@ jobs:
                   print(f"  Failed translating '{text}': {e}")
                   return text
 
+          def sanitize_android_string(text):
+              """Escapes single quotes for AAPT compiler and repairs spacing in Android string placeholders."""
+              if not text:
+                  return text
+              # Fix format placeholders broken by translation engines (e.g. '% 1 $ s' -> '%1$s')
+              text = re.sub(r'%\s*(\d+)\s*\$\s*([sdf])', r'%\1$\2', text)
+              text = re.sub(r'%\s*([sdf])', r'%\1', text)
+              # Escape single quotes required by Android resource compiler
+              text = text.replace("\\'", "'").replace("'", "\\'")
+              return text
+
           def translate_xml_string_resource(path):
-              """Translate text content of <string> and <string-array> items in XML, preserving structure."""
+              """Translate text content of <string> and <string-array> items in XML, preserving keys and structure."""
               try:
                   tree = ET.parse(path)
                   root = tree.getroot()
                   changed = False
-                  namespace = {'ns': 'http://schemas.android.com/apk/res/android'}
 
                   for elem in root.iter():
-                      # Translate 'name' attribute if it contains Chinese
-                      if elem.get('name') and chinese_regex.search(elem.get('name')):
-                          translated = get_translation(elem.get('name'))
-                          if translated != elem.get('name'):
-                              elem.set('name', translated)
-                              changed = True
+                      # NOTE: elem.get('name') is explicitly skipped so resource keys remain unchanged
 
                       # Translate text content of <string> elements
                       if elem.tag == 'string' and elem.text and chinese_regex.search(elem.text):
                           translated = get_translation(elem.text)
                           if translated != elem.text:
-                              elem.text = translated
+                              elem.text = sanitize_android_string(translated)
                               changed = True
 
-                      # Translate items in <string-array>
+                      # Translate items in <string-array> and <plurals>
                       if elem.tag == 'item' and elem.text and chinese_regex.search(elem.text):
                           translated = get_translation(elem.text)
                           if translated != elem.text:
-                              elem.text = translated
+                              elem.text = sanitize_android_string(translated)
                               changed = True
 
                   if changed:
-                      tree.write(path, encoding='unicode', xml_declaration=True)
-                      # Re-add proper Android XML header
-                      with open(path, 'r', encoding='utf-8') as f:
-                          original = f.read()
-                      # Ensure proper XML declaration with encoding
-                      content = '<?xml version="1.0" encoding="utf-8"?>' + re.sub(r'^<\?xml[^?]+\?>\n?', '', original)
-                      with open(path, 'w', encoding='utf-8') as f:
-                          f.write(content)
+                      tree.write(path, encoding='utf-8', xml_declaration=True)
                       print(f"  Translated XML: {path}")
                   return changed
               except ET.ParseError as e:
